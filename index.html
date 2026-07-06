@@ -353,6 +353,18 @@ function App() {
 
   function toggleSort(key){ setSort(prev=>prev.key===key?{key,dir:prev.dir==='asc'?'desc':'asc'}:{key,dir:'asc'}); }
 
+  function deletarMaterialManual(ordemId,produtoId,materialId){
+    if(!window.confirm('Excluir este item manual?')) return;
+    const next=ordens.map(o=>{
+      if(o.id!==ordemId) return o;
+      return {...o,produtos:o.produtos.map(p=>{
+        if(p.id!==produtoId) return p;
+        const mats=p.materiais.filter(m=>m.id!==materialId);
+        return {...p,materiais:mats};
+      }).filter(p=>p.materiais.length>0)};
+    });
+    persist(next);
+  }
   function adicionarMaterialManual(){
     if(!addOS||!addNome.trim()) return;
     const novoMat={id:uid(),descricao:addNome.trim(),
@@ -407,7 +419,12 @@ function App() {
             ...osOpcoes.map(o=>React.createElement('option',{key:o,value:o},'O.S. '+o))
           ),
           React.createElement('input',{type:'text',placeholder:'Nome da matéria-prima',value:addNome,
+            list:'historico-materiais',
             onChange:e=>setAddNome(e.target.value),style:{...S.inp,flex:'1 1 200px',minWidth:180}}),
+          React.createElement('datalist',{id:'historico-materiais'},
+            ...Array.from(new Set((ordens||[]).flatMap(o=>o.produtos.flatMap(p=>p.materiais.map(m=>m.descricao)))))
+              .sort().map((d,i)=>React.createElement('option',{key:i,value:d}))
+          ),
           React.createElement('input',{type:'text',placeholder:'Qtd',value:addQtd,
             onChange:e=>setAddQtd(e.target.value),style:{...S.inp,width:70}}),
           React.createElement('input',{type:'text',placeholder:'Unid',value:addUnid,
@@ -422,7 +439,7 @@ function App() {
             ' Carregando...')
         : linhasFiltradas.length===0
           ? React.createElement(EmptyState,{temDados:todasLinhas.length>0})
-          : React.createElement(TabelaGlobal,{linhas:linhasFiltradas,sort,toggleSort,usuario,onUpdateMaterial:updateMaterial})
+          : React.createElement(TabelaGlobal,{linhas:linhasFiltradas,sort,toggleSort,usuario,onUpdateMaterial:updateMaterial,onDeleteManual:deletarMaterialManual})
     ),
     showGerenciar && React.createElement(GerenciarModal,{
       listaOS,onClose:()=>setShowGerenciar(false),
@@ -522,7 +539,7 @@ function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtro
 }
 
 // ─── TABELA GLOBAL ────────────────────────────────────────────────────────────
-function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial}){
+function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial,onDeleteManual}){
   function Th({label,k,st}){
     const active=sort.key===k;
     const base={...S.th,...st,...(k?{cursor:'pointer'}:{})};
@@ -548,12 +565,12 @@ function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial}){
       React.createElement(Th,{label:'Status',k:'osStatus',   st:S.cStatus})
     ),
     React.createElement('div',null,
-      linhas.map(row=>React.createElement(LinhaRow,{key:row.id,row,usuario,onUpdateMaterial}))
+      linhas.map(row=>React.createElement(LinhaRow,{key:row.id,row,usuario,onUpdateMaterial,onDeleteManual}))
     )
   );
 }
 
-function LinhaRow({row,usuario,onUpdateMaterial}){
+function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
   const fin=row.osStatus==='Finalizada';
   const patch=fields=>onUpdateMaterial(row.ordemId,row.produtoId,row.id,fields);
   const diverg=row.quantidadeEntregue!==''&&
@@ -565,7 +582,11 @@ function LinhaRow({row,usuario,onUpdateMaterial}){
   const rowBg=row.check?S.trBaixado:temQtd?S.trPendente:{};
   return React.createElement('div',{style:{...S.tr,...rowBg,...(fin?S.trFin:{})}},
     // check
-    React.createElement('div',{style:{...S.td,...S.cCheck,...S.tdC}},
+    React.createElement('div',{style:{...S.td,...S.cCheck,...S.tdC,gap:2,flexDirection:'column'}},
+      row.manual&&!fin&&React.createElement('button',{style:{...S.checkBtn,color:'#f87171'},title:'Excluir item manual',
+        onClick:()=>onDeleteManual(row.ordemId,row.produtoId,row.id)},
+        React.createElement(Icon,{name:'Trash2',size:11,color:'#f87171'})
+      ),
       React.createElement('button',{style:S.checkBtn,disabled:fin,
         onClick:()=>patch({check:!row.check,colaborador:!row.check&&!row.colaborador?usuario:row.colaborador,dataBaixa:!row.check?new Date().toLocaleDateString('pt-BR'):''})},
         row.check
