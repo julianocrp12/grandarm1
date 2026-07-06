@@ -206,6 +206,11 @@ function App() {
   const [filtroStatus,setFiltroStatus]   = React.useState('todas');
   const [filtroOS,setFiltroOS]           = React.useState('todas');
   const [sort,setSort]                   = React.useState({key:null,dir:'asc'});
+  const [showAddMat,setShowAddMat]=React.useState(false);
+  const [addOS,setAddOS]=React.useState('');
+  const [addNome,setAddNome]=React.useState('');
+  const [addQtd,setAddQtd]=React.useState('');
+  const [addUnid,setAddUnid]=React.useState('UN');
   const fileInputRef = React.useRef(null);
   const debouncedTexto = useDebounced(filtroTexto,200);
   const admin = isAdmin(usuario);
@@ -324,6 +329,7 @@ function App() {
         else if(k==='colaborador'){va=(a.colaborador||'').toLowerCase();vb=(b.colaborador||'').toLowerCase();}
         else if(k==='check'){va=a.check?1:0;vb=b.check?1:0;}
         else if(k==='osStatus'){va=a.osStatus;vb=b.osStatus;}
+        else if(k==='dataBaixa'){va=a.dataBaixa||'';vb=b.dataBaixa||'';}
         else{va='';vb='';}
         return va<vb?-1*mul:va>vb?1*mul:0;
       });
@@ -347,6 +353,22 @@ function App() {
 
   function toggleSort(key){ setSort(prev=>prev.key===key?{key,dir:prev.dir==='asc'?'desc':'asc'}:{key,dir:'asc'}); }
 
+  function adicionarMaterialManual(){
+    if(!addOS||!addNome.trim()) return;
+    const novoMat={id:uid(),descricao:addNome.trim(),
+      quantidadePedida:parseFloat(addQtd)||0,unidade:addUnid,
+      setorOriginal:'',check:false,quantidadeEntregue:addQtd||'',
+      setorEntregue:'',observacao:'Adicionado manualmente',
+      colaborador:'',dataBaixa:'',manual:true};
+    const next=ordens.map(o=>{
+      if(o.osNumero!==addOS) return o;
+      const temManual=o.produtos.find(p=>p.nome==='Manual');
+      if(temManual) return {...o,produtos:o.produtos.map(p=>p.nome==='Manual'?{...p,materiais:[...p.materiais,novoMat]}:p)};
+      return {...o,produtos:[...o.produtos,{id:uid(),nome:'Manual',materiais:[novoMat]}]};
+    });
+    persist(next);
+    setAddNome('');setAddQtd('');setShowAddMat(false);
+  }
   function exportarExcel(){
     const rows=linhasFiltradas.map(r=>({
       'O.S.': r.osNumero,
@@ -375,7 +397,25 @@ function App() {
     React.createElement('div',{style:S.container},
       React.createElement(UploadBar,{fileInputRef,onFiles:handleFiles,uploadMsg,uploadErr}),
       React.createElement(Toolbar,{filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,
-        filtroOS,setFiltroOS,osOpcoes,total:todasLinhas.length,filtrados:linhasFiltradas.length,onExportar:exportarExcel}),
+        filtroOS,setFiltroOS,osOpcoes,total:todasLinhas.length,filtrados:linhasFiltradas.length,
+        onExportar:exportarExcel,onAddMat:()=>setShowAddMat(true)}),
+      showAddMat&&React.createElement('div',{style:S.addPanel},
+        React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}},
+          React.createElement('span',{style:{fontSize:13,fontWeight:600,color:'#166534'}},'+ Matéria-prima manual'),
+          React.createElement('select',{value:addOS,onChange:e=>setAddOS(e.target.value),style:S.sel},
+            React.createElement('option',{value:''},'— Selecione a O.S. —'),
+            ...osOpcoes.map(o=>React.createElement('option',{key:o,value:o},'O.S. '+o))
+          ),
+          React.createElement('input',{type:'text',placeholder:'Nome da matéria-prima',value:addNome,
+            onChange:e=>setAddNome(e.target.value),style:{...S.inp,flex:'1 1 200px',minWidth:180}}),
+          React.createElement('input',{type:'text',placeholder:'Qtd',value:addQtd,
+            onChange:e=>setAddQtd(e.target.value),style:{...S.inp,width:70}}),
+          React.createElement('input',{type:'text',placeholder:'Unid',value:addUnid,
+            onChange:e=>setAddUnid(e.target.value),style:{...S.inp,width:60}}),
+          React.createElement('button',{style:{...S.exportBtn,background:'#059669'},onClick:adicionarMaterialManual},'Adicionar'),
+          React.createElement('button',{style:{...S.exportBtn,background:'#6b7280'},onClick:()=>setShowAddMat(false)},'Cancelar')
+        )
+      ),
       loading
         ? React.createElement('div',{style:S.loadingBox},
             React.createElement(Icon,{name:'RefreshCw',size:16,style:{animation:'spin 1s linear infinite'}}),
@@ -455,10 +495,12 @@ function UploadBar({fileInputRef,onFiles,uploadMsg,uploadErr}){
 }
 
 // ─── TOOLBAR ─────────────────────────────────────────────────────────────────
-function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtroOS,setFiltroOS,osOpcoes,total,filtrados,onExportar}){
+function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtroOS,setFiltroOS,osOpcoes,total,filtrados,onExportar,onAddMat}){
   return React.createElement('div',{style:S.toolbar},
     React.createElement('button',{style:S.exportBtn,onClick:()=>onExportar()},
       React.createElement(Icon,{name:'Download',size:13,color:'#fff'}),' Exportar Excel'),
+    React.createElement('button',{style:{...S.exportBtn,background:'#059669'},onClick:()=>onAddMat()},
+      React.createElement(Icon,{name:'Package',size:13,color:'#fff'}),' + Material'),
     React.createElement('div',{style:S.searchBox},
       React.createElement(Icon,{name:'Search',size:14,color:'#bbb'}),
       React.createElement('input',{type:'text',placeholder:'Buscar O.S., cliente, produto, material, setor, colaborador...',
@@ -502,6 +544,7 @@ function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial}){
       React.createElement(Th,{label:'Setor',k:'setor',       st:S.cSetor}),
       React.createElement(Th,{label:'Observação',k:null,     st:S.cObs}),
       React.createElement(Th,{label:'Retirado por',k:'colaborador',st:S.cColab}),
+      React.createElement(Th,{label:'Data baixa',k:'dataBaixa',st:S.cDataBaixa}),
       React.createElement(Th,{label:'Status',k:'osStatus',   st:S.cStatus})
     ),
     React.createElement('div',null,
@@ -524,7 +567,7 @@ function LinhaRow({row,usuario,onUpdateMaterial}){
     // check
     React.createElement('div',{style:{...S.td,...S.cCheck,...S.tdC}},
       React.createElement('button',{style:S.checkBtn,disabled:fin,
-        onClick:()=>patch({check:!row.check,colaborador:!row.check&&!row.colaborador?usuario:row.colaborador})},
+        onClick:()=>patch({check:!row.check,colaborador:!row.check&&!row.colaborador?usuario:row.colaborador,dataBaixa:!row.check?new Date().toLocaleDateString('pt-BR'):''})},
         row.check
           ? React.createElement(Icon,{name:'CheckCircle2',size:17,color:'#4a9b5e'})
           : React.createElement(Icon,{name:'Circle',size:17,color:'#ccc'})
@@ -566,6 +609,8 @@ function LinhaRow({row,usuario,onUpdateMaterial}){
     React.createElement('div',{style:{...S.td,...S.cColab}},
       React.createElement('input',{type:'text',disabled:fin,value:row.colaborador,
         placeholder:'—',onChange:e=>patch({colaborador:e.target.value}),style:S.inp})),
+    // data baixa
+    React.createElement('div',{style:{...S.td,...S.cDataBaixa}},React.createElement('span',{style:{fontSize:11,color:'#666',whiteSpace:'nowrap'}},row.dataBaixa||'—')),
     // status
     React.createElement('div',{style:{...S.td,...S.cStatus,...S.tdC}},
       React.createElement('span',{style:{...S.statusPill,...(fin?S.pillFin:S.pillAnd)}},
@@ -667,6 +712,7 @@ const S={
   sel:{fontSize:12.5,padding:'7px 10px',borderRadius:8,border:'1px solid #e2e2de',background:'#fff',color:'#444',cursor:'pointer'},
   countTag:{fontSize:12,color:'#999',marginLeft:'auto'},
   exportBtn:{display:'flex',alignItems:'center',gap:5,fontSize:12.5,fontWeight:600,background:'#2563eb',color:'#fff',border:'none',borderRadius:7,padding:'7px 12px',cursor:'pointer',whiteSpace:'nowrap'},
+  addPanel:{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,padding:'10px 14px',marginBottom:10},
   loadingBox:{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'#888',padding:'60px 0',justifyContent:'center'},
   empty:{display:'flex',flexDirection:'column',alignItems:'center',gap:6,padding:'80px 0',textAlign:'center'},
   emptyT:{fontSize:14,fontWeight:600,color:'#666',margin:0},
@@ -676,7 +722,7 @@ const S={
   th:{padding:'7px 6px',fontSize:10.5,fontWeight:700,color:'#888',letterSpacing:.3,userSelect:'none',display:'flex',alignItems:'center'},
   tr:{display:'flex',alignItems:'center',borderBottom:'1px solid #f2f2f0',minWidth:'fit-content',minHeight:34},
   trBaixado:{background:'#f0faf2',borderLeft:'3px solid #4a9b5e'},
-  trPendente:{background:'#fffbeb',borderLeft:'3px solid #e8b84b'},
+  trPendente:{background:'#fef3c7',borderLeft:'3px solid #d97706'},
   trFin:{opacity:.72},
   td:{padding:'3px 6px',fontSize:12,display:'flex',alignItems:'center'},
   tdC:{justifyContent:'center'},
@@ -689,6 +735,7 @@ const S={
   cSetor:{width:130,flexShrink:0},
   cObs:{flex:'1 1 180px',minWidth:140},
   cColab:{width:110,flexShrink:0},
+  cDataBaixa:{width:88,flexShrink:0},
   cStatus:{width:120,flexShrink:0},
   muted:{color:'#999',fontSize:12},
   overflow:{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'100%',display:'block'},
