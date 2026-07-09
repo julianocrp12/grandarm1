@@ -633,7 +633,13 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
     React.createElement('div',{style:{...S.td,...S.cQtd}},
       React.createElement('input',{type:'text',disabled:fin,value:row.quantidadeEntregue,
         placeholder:String(row.quantidadePedida),
-        onChange:e=>patch({quantidadeEntregue:e.target.value}),
+        onChange:e=>{
+          const val=e.target.value;
+          const obsAtual=row.observacao||'';
+          const obsAuto=obsAtual===''||obsAtual.startsWith('Entregue por ');
+          const novaObs=val&&obsAuto?'Entregue por '+usuario:obsAtual;
+          patch({quantidadeEntregue:val,observacao:novaObs});
+        },
         style:{...S.inp,...(diverg?S.inpWarn:{})}})),
     // setor
     React.createElement('div',{style:{...S.td,...S.cSetor}},
