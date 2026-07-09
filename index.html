@@ -206,6 +206,7 @@ function App() {
   const [filtroStatus,setFiltroStatus]   = React.useState('todas');
   const [filtroOS,setFiltroOS]           = React.useState('todas');
   const [sort,setSort]                   = React.useState({key:null,dir:'asc'});
+  const [agruparStatus,setAgruparStatus]   = React.useState(false);
   const [showAddMat,setShowAddMat]=React.useState(false);
   const [addOS,setAddOS]=React.useState('');
   const [addNome,setAddNome]=React.useState('');
@@ -334,8 +335,19 @@ function App() {
         return va<vb?-1*mul:va>vb?1*mul:0;
       });
     }
+    // Agrupamento por status: pendente de baixa → sem nada → baixado
+    if(agruparStatus){
+      list=[...list].sort((a,b)=>{
+        const rank=r=>{
+          if(r.check) return 2; // baixado — vai para baixo
+          if(r.quantidadeEntregue!==''&&r.quantidadeEntregue!=null) return 0; // pendente — vai para cima
+          return 1; // sem nada — meio
+        };
+        return rank(a)-rank(b);
+      });
+    }
     return list;
-  },[todasLinhas,filtroStatus,filtroOS,debouncedTexto,sort]);
+  },[todasLinhas,filtroStatus,filtroOS,debouncedTexto,sort,agruparStatus]);
 
   const listaOS = React.useMemo(()=>{
     if(!ordens) return [];
@@ -410,7 +422,8 @@ function App() {
       React.createElement(UploadBar,{fileInputRef,onFiles:handleFiles,uploadMsg,uploadErr}),
       React.createElement(Toolbar,{filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,
         filtroOS,setFiltroOS,osOpcoes,total:todasLinhas.length,filtrados:linhasFiltradas.length,
-        onExportar:exportarExcel,onAddMat:()=>setShowAddMat(true)}),
+        onExportar:exportarExcel,onAddMat:()=>setShowAddMat(true),
+        onAgrupar:agruparStatus,onToggleAgrupar:()=>setAgruparStatus(v=>!v)}),
       showAddMat&&React.createElement('div',{style:S.addPanel},
         React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}},
           React.createElement('span',{style:{fontSize:13,fontWeight:600,color:'#166534'}},'+ Matéria-prima manual'),
@@ -512,12 +525,20 @@ function UploadBar({fileInputRef,onFiles,uploadMsg,uploadErr}){
 }
 
 // ─── TOOLBAR ─────────────────────────────────────────────────────────────────
-function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtroOS,setFiltroOS,osOpcoes,total,filtrados,onExportar,onAddMat}){
+function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtroOS,setFiltroOS,osOpcoes,total,filtrados,onExportar,onAddMat,onAgrupar,onToggleAgrupar}){
   return React.createElement('div',{style:S.toolbar},
     React.createElement('button',{style:S.exportBtn,onClick:()=>onExportar()},
       React.createElement(Icon,{name:'Download',size:13,color:'#fff'}),' Exportar Excel'),
     React.createElement('button',{style:{...S.exportBtn,background:'#059669'},onClick:()=>onAddMat()},
       React.createElement(Icon,{name:'Package',size:13,color:'#fff'}),' + Material'),
+    React.createElement('button',{
+      style:{...S.exportBtn,background:onAgrupar?'#7c3aed':'#6b7280'},
+      onClick:()=>onToggleAgrupar(),
+      title:'Agrupar: Pendente de baixa → Sem ação → Baixado'
+    },
+      React.createElement(Icon,{name:'ArrowUpDown',size:13,color:'#fff'}),
+      onAgrupar?' Agrupado por status':' Agrupar por status'
+    ),
     React.createElement('div',{style:S.searchBox},
       React.createElement(Icon,{name:'Search',size:14,color:'#bbb'}),
       React.createElement('input',{type:'text',placeholder:'Buscar O.S., cliente, produto, material, setor, colaborador...',
