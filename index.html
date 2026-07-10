@@ -207,6 +207,7 @@ function App() {
   const [filtroOS,setFiltroOS]           = React.useState('todas');
   const [sort,setSort]                   = React.useState({key:null,dir:'asc'});
   const [agruparStatus,setAgruparStatus]   = React.useState(false);
+  const [filtroBaixa,setFiltroBaixa]       = React.useState('');
   const [showAddMat,setShowAddMat]=React.useState(false);
   const [addOS,setAddOS]=React.useState('');
   const [addNome,setAddNome]=React.useState('');
@@ -335,6 +336,12 @@ function App() {
         return va<vb?-1*mul:va>vb?1*mul:0;
       });
     }
+    // Filtro por data de baixa
+    if(filtroBaixa){
+      const [ano,mes,dia]=filtroBaixa.split('-');
+      const dataFmt=`${dia}/${mes}/${ano}`;
+      list=list.filter(r=>r.dataBaixa===dataFmt);
+    }
     // Agrupamento por status: pendente de baixa → sem nada → baixado
     if(agruparStatus){
       list=[...list].sort((a,b)=>{
@@ -347,7 +354,7 @@ function App() {
       });
     }
     return list;
-  },[todasLinhas,filtroStatus,filtroOS,debouncedTexto,sort,agruparStatus]);
+  },[todasLinhas,filtroStatus,filtroOS,debouncedTexto,sort,agruparStatus,filtroBaixa]);
 
   const listaOS = React.useMemo(()=>{
     if(!ordens) return [];
@@ -423,7 +430,8 @@ function App() {
       React.createElement(Toolbar,{filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,
         filtroOS,setFiltroOS,osOpcoes,total:todasLinhas.length,filtrados:linhasFiltradas.length,
         onExportar:exportarExcel,onAddMat:()=>setShowAddMat(true),
-        onAgrupar:agruparStatus,onToggleAgrupar:()=>setAgruparStatus(v=>!v)}),
+        onAgrupar:agruparStatus,onToggleAgrupar:()=>setAgruparStatus(v=>!v),
+        filtroBaixa,setFiltroBaixa}),
       showAddMat&&React.createElement('div',{style:S.addPanel},
         React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}},
           React.createElement('span',{style:{fontSize:13,fontWeight:600,color:'#166534'}},'+ Matéria-prima manual'),
@@ -525,7 +533,7 @@ function UploadBar({fileInputRef,onFiles,uploadMsg,uploadErr}){
 }
 
 // ─── TOOLBAR ─────────────────────────────────────────────────────────────────
-function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtroOS,setFiltroOS,osOpcoes,total,filtrados,onExportar,onAddMat,onAgrupar,onToggleAgrupar}){
+function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtroOS,setFiltroOS,osOpcoes,total,filtrados,onExportar,onAddMat,onAgrupar,onToggleAgrupar,filtroBaixa,setFiltroBaixa}){
   return React.createElement('div',{style:S.toolbar},
     React.createElement('button',{style:S.exportBtn,onClick:()=>onExportar()},
       React.createElement(Icon,{name:'Download',size:13,color:'#fff'}),' Exportar Excel'),
@@ -554,6 +562,18 @@ function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtro
       React.createElement('option',{value:'todas'},'Todos os status'),
       React.createElement('option',{value:'Em andamento'},'Em andamento'),
       React.createElement('option',{value:'Finalizada'},'Finalizada')
+    ),
+    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6,background:'#fff',border:'1px solid #e2e2de',borderRadius:8,padding:'5px 10px'}},
+      React.createElement(Icon,{name:'Search',size:13,color:'#4a9b5e'}),
+      React.createElement('span',{style:{fontSize:12,color:'#555',whiteSpace:'nowrap'}},'Baixas em:'),
+      React.createElement('input',{
+        type:'date',value:filtroBaixa,
+        onChange:e=>setFiltroBaixa(e.target.value),
+        style:{border:'none',outline:'none',fontSize:12.5,background:'transparent',cursor:'pointer',color:filtroBaixa?'#166534':'#999'}
+      }),
+      filtroBaixa&&React.createElement('span',{style:{cursor:'pointer',color:'#999'},onClick:()=>setFiltroBaixa('')},
+        React.createElement(Icon,{name:'X',size:12,color:'#999'})
+      )
     ),
     React.createElement('span',{style:S.countTag},`${filtrados.toLocaleString()} linha${filtrados!==1?'s':''} de ${total.toLocaleString()}`)
   );
