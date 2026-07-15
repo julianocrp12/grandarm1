@@ -271,8 +271,12 @@ function App() {
 
   function updateMaterial(ordemId,produtoId,materialId,patchData,forceConfirm){
     if(forceConfirm){
-      // Pede confirmação antes de salvar
-      setConfirmModal({ordemId,produtoId,materialId,patchData});
+      // Guarda valor anterior para poder reverter no cancelar
+      const ordemAtual=ordens.find(o=>o.id===ordemId);
+      const prodAtual=ordemAtual?.produtos.find(p=>p.id===produtoId);
+      const matAtual=prodAtual?.materiais.find(m=>m.id===materialId);
+      const valorAnterior=matAtual?.quantidadeEntregue||'';
+      setConfirmModal({ordemId,produtoId,materialId,patchData,valorAnterior});
       return;
     }
     persist(ordens.map(o=>o.id!==ordemId?o:{
@@ -289,6 +293,11 @@ function App() {
         ...p,materiais:p.materiais.map(m=>m.id===materialId?{...m,...patchData}:m)
       })
     }));
+    setConfirmModal(null);
+  }
+  function cancelarAlteracao(){
+    // sinaliza para o LinhaRow que deve reverter via key de reset
+    setConfirmModal(prev=>prev?{...prev,cancelado:true}:null);
     setConfirmModal(null);
   }
   function toggleStatus(ordemId){
@@ -462,7 +471,14 @@ function App() {
           React.createElement('div',{style:{display:'flex',gap:8,padding:'12px 24px 20px',justifyContent:'flex-end'}},
             React.createElement('button',{
               style:{padding:'8px 18px',fontSize:13,fontWeight:600,borderRadius:7,border:'1px solid #ddd',background:'#fff',cursor:'pointer'},
-              onClick:()=>setConfirmModal(null)
+              onClick:()=>{
+                // Reverter o campo via evento customizado
+                if(confirmModal){
+                  const ev=new CustomEvent('reverterQtd',{detail:{materialId:confirmModal.materialId,valor:confirmModal.valorAnterior}});
+                  window.dispatchEvent(ev);
+                }
+                setConfirmModal(null);
+              }
             },'Cancelar ação'),
             React.createElement('button',{
               style:{padding:'8px 18px',fontSize:13,fontWeight:600,borderRadius:7,border:'none',background:'#2563eb',color:'#fff',cursor:'pointer'},
@@ -652,9 +668,16 @@ function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial,onDeleteM
 
 function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
   const fin=row.osStatus==='Finalizada';
+  const bloqueadoPorCheck=row.check&&!isAdmin(usuario); // após check, só admin edita
+  const disabled=fin||bloqueadoPorCheck;
   const patch=fields=>onUpdateMaterial(row.ordemId,row.produtoId,row.id,fields);
   const [qtdLocal,setQtdLocal]=React.useState(row.quantidadeEntregue);
   React.useEffect(()=>setQtdLocal(row.quantidadeEntregue),[row.quantidadeEntregue]);
+  React.useEffect(()=>{
+    const handler=e=>{if(e.detail.materialId===row.id)setQtdLocal(e.detail.valor);};
+    window.addEventListener('reverterQtd',handler);
+    return()=>window.removeEventListener('reverterQtd',handler);
+  },[row.id]);
   const diverg=row.quantidadeEntregue!==''&&
     parseFloat(row.quantidadeEntregue)!==row.quantidadePedida&&
     !isNaN(parseFloat(row.quantidadeEntregue));
@@ -669,7 +692,7 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
         onClick:()=>onDeleteManual(row.ordemId,row.produtoId,row.id)},
         React.createElement(Icon,{name:'Trash2',size:11,color:'#f87171'})
       ),
-      React.createElement('button',{style:S.checkBtn,disabled:fin,
+      React.createElement('button',{style:{...S.checkBtn,opacity:disabled&&!fin?0.5:1},disabled:disabled,
         onClick:()=>patch({check:!row.check,colaborador:!row.check&&!row.colaborador?usuario:row.colaborador,dataBaixa:!row.check?new Date().toLocaleDateString('pt-BR'):''})},
         row.check
           ? React.createElement(Icon,{name:'CheckCircle2',size:17,color:'#4a9b5e'})
@@ -692,7 +715,7 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
     React.createElement('div',{style:{...S.td,...S.cQtd,...S.muted}},`${row.quantidadePedida} ${row.unidade}`),
     // qtd entregue
     React.createElement('div',{style:{...S.td,...S.cQtd}},
-      React.createElement('input',{type:'text',disabled:fin,value:qtdLocal,
+      React.createElement('input',{type:'text',disabled:disabled,value:qtdLocal,
         placeholder:String(row.quantidadePedida),
         onChange:e=>setQtdLocal(e.target.value),
         onBlur:e=>{
@@ -707,7 +730,7 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
         style:{...S.inp,...(diverg?S.inpWarn:{})}})),
     // setor
     React.createElement('div',{style:{...S.td,...S.cSetor}},
-      React.createElement('select',{disabled:fin,value:row.setorEntregue||'',
+      React.createElement('select',{disabled:disabled,value:row.setorEntregue||'',
         onChange:e=>patch({setorEntregue:e.target.value}),
         style:{...S.sel2,...(setDiv?S.inpWarn:{})}},
         React.createElement('option',{value:''},'—'),
@@ -715,11 +738,11 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
       )),
     // obs
     React.createElement('div',{style:{...S.td,...S.cObs}},
-      React.createElement('input',{type:'text',disabled:fin,value:row.observacao,
+      React.createElement('input',{type:'text',disabled:disabled,value:row.observacao,
         placeholder:'observação...',onChange:e=>patch({observacao:e.target.value}),style:S.inp})),
     // colaborador
     React.createElement('div',{style:{...S.td,...S.cColab}},
-      React.createElement('input',{type:'text',disabled:fin,value:row.colaborador,
+      React.createElement('input',{type:'text',disabled:disabled,value:row.colaborador,
         placeholder:'—',onChange:e=>patch({colaborador:e.target.value}),style:S.inp})),
     // data baixa
     React.createElement('div',{style:{...S.td,...S.cDataBaixa}},React.createElement('span',{style:{fontSize:11,color:'#666',whiteSpace:'nowrap'}},row.dataBaixa||'—')),
