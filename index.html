@@ -361,6 +361,7 @@ function App() {
         else if(k==='check'){va=a.check?1:0;vb=b.check?1:0;}
         else if(k==='osStatus'){va=a.osStatus;vb=b.osStatus;}
         else if(k==='dataBaixa'){va=a.dataBaixa||'';vb=b.dataBaixa||'';}
+        else if(k==='dataHoraEntrega'){va=a.dataHoraEntrega||'';vb=b.dataHoraEntrega||'';}
         else if(k==='dataEntregaMat'){va=a.dataEntregaMat||'';vb=b.dataEntregaMat||'';}
         else{va='';vb='';}
         return va<vb?-1*mul:va>vb?1*mul:0;
@@ -661,6 +662,7 @@ function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial,onDeleteM
       React.createElement(Th,{label:'Qtd pedida',k:'qtdPedida',st:S.cQtd}),
       React.createElement(Th,{label:'Qtd entregue',k:'qtdEntregue',st:S.cQtd}),
       React.createElement(Th,{label:'Setor',k:'setor',       st:S.cSetor}),
+      React.createElement(Th,{label:'Dt. entrega',k:'dataHoraEntrega',st:S.cDtEntrega}),
       React.createElement(Th,{label:'Observação',k:null,     st:S.cObs}),
       React.createElement(Th,{label:'Retirado por',k:'colaborador',st:S.cColab}),
       React.createElement(Th,{label:'Dt. Entrega',k:'dataEntregaMat',st:S.cDataBaixa}),
@@ -677,6 +679,7 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
   const fin=row.osStatus==='Finalizada';
   const bloqueadoPorCheck=row.check&&!isAdmin(usuario); // após check, só admin edita
   const disabled=fin||bloqueadoPorCheck;
+  const motivoBloqueio=fin?'O.S. finalizada — edição bloqueada':bloqueadoPorCheck?'Somente Juliano Ribeiro pode editar após o check':'';
   const patch=fields=>onUpdateMaterial(row.ordemId,row.produtoId,row.id,fields);
   const [qtdLocal,setQtdLocal]=React.useState(row.quantidadeEntregue);
   React.useEffect(()=>setQtdLocal(row.quantidadeEntregue),[row.quantidadeEntregue]);
@@ -699,7 +702,7 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
         onClick:()=>onDeleteManual(row.ordemId,row.produtoId,row.id)},
         React.createElement(Icon,{name:'Trash2',size:11,color:'#f87171'})
       ),
-      React.createElement('button',{style:{...S.checkBtn,opacity:disabled&&!fin?0.5:1},disabled:disabled,
+      React.createElement('button',{style:{...S.checkBtn,opacity:disabled?0.45:1},disabled:disabled,title:motivoBloqueio||undefined,
         onClick:()=>patch({check:!row.check,colaborador:!row.check&&!row.colaborador?usuario:row.colaborador,dataBaixa:!row.check?new Date().toLocaleDateString('pt-BR'):''})},
         row.check
           ? React.createElement(Icon,{name:'CheckCircle2',size:17,color:'#4a9b5e'})
@@ -731,7 +734,9 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
           const obsAtual=row.observacao||'';
           const obsAuto=obsAtual===''||obsAtual.startsWith('Entregue por ');
           const novaObs=val&&obsAuto?'Entregue por '+usuario:obsAtual;
-          onUpdateMaterial(row.ordemId,row.produtoId,row.id,{quantidadeEntregue:val,observacao:novaObs},true);
+          const agora=new Date();
+          const dataHoraEntrega=val?agora.toLocaleDateString('pt-BR')+' '+agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+          onUpdateMaterial(row.ordemId,row.produtoId,row.id,{quantidadeEntregue:val,observacao:novaObs,dataHoraEntrega},true);
         },
         onKeyDown:e=>{if(e.key==='Escape'){setQtdLocal(row.quantidadeEntregue);}},
         style:{...S.inp,...(diverg?S.inpWarn:{})}})),
@@ -743,6 +748,10 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
         React.createElement('option',{value:''},'—'),
         ...SETORES.map(s=>React.createElement('option',{key:s,value:s},s))
       )),
+    // dt entrega
+    React.createElement('div',{style:{...S.td,...S.cDtEntrega}},
+      React.createElement('span',{style:{fontSize:10.5,color:'#666',whiteSpace:'nowrap'}},row.dataHoraEntrega||'—')
+    ),
     // obs
     React.createElement('div',{style:{...S.td,...S.cObs}},
       React.createElement('input',{type:'text',disabled:disabled,value:row.observacao,
@@ -879,6 +888,7 @@ const S={
   cSetor:{width:130,flexShrink:0},
   cObs:{flex:'1 1 180px',minWidth:140},
   cColab:{width:110,flexShrink:0},
+  cDtEntrega:{width:110,flexShrink:0},
   cDataBaixa:{width:88,flexShrink:0},
   cStatus:{width:120,flexShrink:0},
   muted:{color:'#999',fontSize:12},
