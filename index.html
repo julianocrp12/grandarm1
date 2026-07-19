@@ -750,9 +750,9 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
         background:'#eff4ff',padding:'2px 6px',borderRadius:5,whiteSpace:'nowrap'}},
         '#',row.osNumero||'—')
     ),
-    React.createElement('td',{style:{...cellSt,width:148}},row.cliente),
-    React.createElement('td',{style:{...cellSt,width:148}},row.produtoNome),
-    React.createElement('td',{style:{...cellSt,width:190}},row.descricao),
+    React.createElement('td',{style:{...cellSt,width:148},title:row.cliente},row.cliente),
+    React.createElement('td',{style:{...cellSt,width:148},title:row.produtoNome},row.produtoNome),
+    React.createElement('td',{style:{...cellSt,width:190},title:row.descricao},row.descricao),
     React.createElement('td',{style:{...cellSt,width:82,color:'#555'}},row.quantidadePedida,' ',row.unidade),
     React.createElement('td',{style:{...cellSt,width:92,padding:'3px 6px'}},
       React.createElement('input',{type:'text',disabled,value:qtdLocal,
@@ -781,13 +781,13 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
         ...SETORES.map(s=>React.createElement('option',{key:s,value:s},s))
       )
     ),
-    React.createElement('td',{style:{...cellSt,width:108}},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataHoraEntrega||'—')),
-    React.createElement('td',{style:{...cellSt,width:84}},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataBaixa||'—')),
-    React.createElement('td',{style:{...cellSt,padding:'3px 6px'}},
+    React.createElement('td',{style:{...cellSt,width:108},title:row.dataHoraEntrega||''},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataHoraEntrega||'—')),
+    React.createElement('td',{style:{...cellSt,width:84},title:row.dataBaixa||''},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataBaixa||'—')),
+    React.createElement('td',{style:{...cellSt,padding:'3px 6px'},title:row.observacao},
       React.createElement('input',{type:'text',disabled,value:row.observacao,
         placeholder:'observação...',onChange:e=>patch({observacao:e.target.value}),style:inpSt})
     ),
-    React.createElement('td',{style:{...cellSt,width:108,padding:'3px 6px'}},
+    React.createElement('td',{style:{...cellSt,width:108,padding:'3px 6px'},title:row.colaborador},
       React.createElement('input',{type:'text',disabled,value:row.colaborador,
         placeholder:'—',onChange:e=>patch({colaborador:e.target.value}),style:inpSt})
     ),
