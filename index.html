@@ -643,53 +643,56 @@ function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtro
 
 // ─── TABELA GLOBAL ────────────────────────────────────────────────────────────
 function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial,onDeleteManual}){
-  function Th({label,k,w}){
-    const active=sort.key===k;
-    return React.createElement('th',{
-      style:{...S.th,width:w||'auto',minWidth:w||'auto',...(k?{cursor:'pointer'}:{})},
-      onClick:k?()=>toggleSort(k):undefined
-    },
-      label,
-      k&&React.createElement(Icon,{name:'ArrowUpDown',size:10,color:active?'#2563eb':'#bbb',style:{marginLeft:3}}),
-      active&&React.createElement(Icon,{name:sort.dir==='asc'?'ChevronUp':'ChevronDown',size:10,color:'#2563eb',style:{marginLeft:1}})
-    );
-  }
-  return React.createElement('div',{style:S.tableWrap},
-    React.createElement('table',{style:{borderCollapse:'collapse',width:'100%',tableLayout:'fixed'}},
+  const thStyle=(w,k,active)=>({
+    padding:'9px 8px',fontSize:11,fontWeight:700,color:'#222',
+    background:'#f0f0ee',borderBottom:'2px solid #d0d0cc',
+    whiteSpace:'nowrap',textAlign:'left',userSelect:'none',
+    width:w,cursor:k?'pointer':'default',verticalAlign:'middle'
+  });
+
+  const cols=[
+    {l:'',k:null,w:40},{l:'O.S.',k:'osNumero',w:64},
+    {l:'Cliente',k:'cliente',w:148},{l:'Produto',k:'produtoNome',w:148},
+    {l:'Matéria-prima',k:'descricao',w:190},
+    {l:'Qtd pedida',k:'qtdPedida',w:82},{l:'Qtd entregue',k:'qtdEntregue',w:92},
+    {l:'Setor',k:'setor',w:122},
+    {l:'Dt. entrega',k:'dataHoraEntrega',w:108},{l:'Data baixa',k:'dataBaixa',w:84},
+    {l:'Observação',k:null,w:'auto'},{l:'Retirado por',k:'colaborador',w:108},
+    {l:'Status',k:'osStatus',w:112},
+  ];
+
+  return React.createElement('div',{style:{
+    background:'#fff',border:'1px solid #ddd',borderRadius:10,
+    overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - 210px)'
+  }},
+    React.createElement('table',{style:{
+      borderCollapse:'collapse',tableLayout:'fixed',
+      width:'100%',minWidth:'1300px'
+    }},
       React.createElement('colgroup',null,
-        React.createElement('col',{style:{width:42}}),   // check
-        React.createElement('col',{style:{width:68}}),   // OS
-        React.createElement('col',{style:{width:150}}),  // cliente
-        React.createElement('col',{style:{width:150}}),  // produto
-        React.createElement('col',{style:{width:180}}),  // materia
-        React.createElement('col',{style:{width:82}}),   // qtd pedida
-        React.createElement('col',{style:{width:82}}),   // qtd entregue
-        React.createElement('col',{style:{width:120}}),  // setor
-        React.createElement('col',{style:{width:108}}),  // dt entrega
-        React.createElement('col',{style:{width:82}}),   // data baixa
-        React.createElement('col',{style:{width:'auto'}}), // obs
-        React.createElement('col',{style:{width:108}}),  // colaborador
-        React.createElement('col',{style:{width:112}})   // status
+        cols.map((c,i)=>React.createElement('col',{key:i,style:{width:c.w}}))
       ),
-      React.createElement('thead',{style:{position:'sticky',top:0,zIndex:10,background:'#f0f0ee'}},
+      React.createElement('thead',{style:{position:'sticky',top:0,zIndex:10}},
         React.createElement('tr',null,
-          React.createElement(Th,{label:'',       k:null,        w:42}),
-          React.createElement(Th,{label:'O.S.',   k:'osNumero',  w:68}),
-          React.createElement(Th,{label:'Cliente',k:'cliente',   w:150}),
-          React.createElement(Th,{label:'Produto',k:'produtoNome',w:150}),
-          React.createElement(Th,{label:'Matéria-prima',k:'descricao',w:180}),
-          React.createElement(Th,{label:'Qtd pedida',k:'qtdPedida',w:82}),
-          React.createElement(Th,{label:'Qtd entregue',k:'qtdEntregue',w:82}),
-          React.createElement(Th,{label:'Setor',  k:'setor',     w:120}),
-          React.createElement(Th,{label:'Dt. entrega',k:'dataHoraEntrega',w:108}),
-          React.createElement(Th,{label:'Data baixa',k:'dataBaixa',w:82}),
-          React.createElement(Th,{label:'Observação',k:null,     w:'auto'}),
-          React.createElement(Th,{label:'Retirado por',k:'colaborador',w:108}),
-          React.createElement(Th,{label:'Status', k:'osStatus',  w:112})
+          cols.map((c,i)=>{
+            const active=sort.key===c.k;
+            return React.createElement('th',{key:i,
+              onClick:c.k?()=>toggleSort(c.k):undefined,
+              style:thStyle(c.w,c.k,active)
+            },
+              React.createElement('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},
+                c.l,
+                c.k&&React.createElement(Icon,{name:'ArrowUpDown',size:10,color:active?'#2563eb':'#bbb'}),
+                active&&React.createElement(Icon,{name:sort.dir==='asc'?'ChevronUp':'ChevronDown',size:10,color:'#2563eb'})
+              )
+            );
+          })
         )
       ),
       React.createElement('tbody',null,
-        linhas.map(row=>React.createElement(LinhaRow,{key:row.id,row,usuario,onUpdateMaterial,onDeleteManual}))
+        linhas.map(row=>React.createElement(LinhaRow,{
+          key:row.id,row,usuario,onUpdateMaterial,onDeleteManual
+        }))
       )
     )
   );
@@ -699,56 +702,59 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
   const fin=row.osStatus==='Finalizada';
   const bloqueadoPorCheck=row.check&&!isAdmin(usuario);
   const disabled=fin||bloqueadoPorCheck;
-  const motivoBloqueio=fin?'O.S. finalizada — edição bloqueada':bloqueadoPorCheck?'Somente Juliano Ribeiro pode editar após o check':'';
+  const motivoBloqueio=fin?'O.S. finalizada':bloqueadoPorCheck?'Apenas Juliano Ribeiro pode editar após o check':'';
   const patch=fields=>onUpdateMaterial(row.ordemId,row.produtoId,row.id,fields);
   const [qtdLocal,setQtdLocal]=React.useState(row.quantidadeEntregue);
   React.useEffect(()=>setQtdLocal(row.quantidadeEntregue),[row.quantidadeEntregue]);
   React.useEffect(()=>{
-    const handler=e=>{if(e.detail.materialId===row.id)setQtdLocal(e.detail.valor);};
-    window.addEventListener('reverterQtd',handler);
-    return()=>window.removeEventListener('reverterQtd',handler);
+    const h=e=>{if(e.detail.materialId===row.id)setQtdLocal(e.detail.valor);};
+    window.addEventListener('reverterQtd',h);
+    return()=>window.removeEventListener('reverterQtd',h);
   },[row.id]);
 
   const diverg=qtdLocal!==''&&parseFloat(qtdLocal)!==row.quantidadePedida&&!isNaN(parseFloat(qtdLocal));
   const setDiv=row.setorEntregue&&row.setorOriginal&&row.setorEntregue.toUpperCase()!==row.setorOriginal.toUpperCase();
   const temQtd=row.quantidadeEntregue!==''&&row.quantidadeEntregue!=null;
-  const rowBg=row.check?'#f0faf2':temQtd?'#fef3c7':'#fff';
-  const rowBorder=row.check?'3px solid #4a9b5e':temQtd?'3px solid #d97706':'';
+  const rowBg=row.check?'#edfaf1':temQtd?'#fefce8':'#fff';
+  const rowBL=row.check?'3px solid #22c55e':temQtd?'3px solid #d97706':'3px solid transparent';
 
-  const tdS={...S.tdc};
+  const cellSt={padding:'5px 7px',fontSize:12.5,fontWeight:500,color:'#111',
+    verticalAlign:'middle',borderBottom:'1px solid #f0f0ee',
+    overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'};
 
-  return React.createElement('tr',{style:{background:rowBg,borderLeft:rowBorder,opacity:fin?0.75:1}},
-    // check
-    React.createElement('td',{style:{...tdS,textAlign:'center',padding:'2px'}},
+  const inpSt={width:'100%',padding:'4px 6px',fontSize:12.5,
+    border:'1px solid #ddd',borderRadius:5,outline:'none',
+    background:disabled?'#f5f5f5':'#fff',color:'#111',fontWeight:500,boxSizing:'border-box'};
+
+  return React.createElement('tr',{style:{background:rowBg,borderLeft:rowBL}},
+    React.createElement('td',{style:{...cellSt,width:40,textAlign:'center',padding:'3px 2px'}},
       row.manual&&!disabled&&React.createElement('button',{
-        style:{background:'none',border:'none',cursor:'pointer',padding:0,display:'block',margin:'0 auto'},
-        title:'Excluir item manual',onClick:()=>onDeleteManual(row.ordemId,row.produtoId,row.id)},
-        React.createElement(Icon,{name:'Trash2',size:10,color:'#f87171'})
-      ),
+        style:{background:'none',border:'none',cursor:'pointer',padding:0,display:'block',margin:'0 auto 2px'},
+        title:'Excluir item manual',onClick:()=>onDeleteManual(row.ordemId,row.produtoId,row.id)
+      },React.createElement(Icon,{name:'Trash2',size:11,color:'#f87171'})),
       React.createElement('button',{
-        style:{background:'none',border:'none',cursor:disabled?'not-allowed':'pointer',padding:0,display:'block',margin:'0 auto',opacity:disabled?0.45:1},
+        style:{background:'none',border:'none',cursor:disabled?'not-allowed':'pointer',
+          padding:0,display:'block',margin:'0 auto',opacity:disabled?0.4:1},
         disabled,title:motivoBloqueio||undefined,
         onClick:()=>patch({check:!row.check,
           colaborador:!row.check&&!row.colaborador?usuario:row.colaborador,
           dataBaixa:!row.check?new Date().toLocaleDateString('pt-BR'):''})
       },
         row.check
-          ? React.createElement(Icon,{name:'CheckCircle2',size:17,color:'#4a9b5e'})
-          : React.createElement(Icon,{name:'Circle',size:17,color:'#ccc'})
+          ? React.createElement(Icon,{name:'CheckCircle2',size:18,color:'#22c55e'})
+          : React.createElement(Icon,{name:'Circle',size:18,color:'#bbb'})
       )
     ),
-    // OS
-    React.createElement('td',{style:tdS},React.createElement('span',{style:S.osTag},'#',row.osNumero||'—')),
-    // cliente
-    React.createElement('td',{style:tdS,title:row.cliente},React.createElement('span',{style:S.ellipsis},row.cliente)),
-    // produto
-    React.createElement('td',{style:tdS,title:row.produtoNome},React.createElement('span',{style:S.ellipsis},row.produtoNome)),
-    // matéria-prima
-    React.createElement('td',{style:tdS,title:row.descricao},React.createElement('span',{style:S.ellipsis},row.descricao)),
-    // qtd pedida
-    React.createElement('td',{style:{...tdS,color:'#555'}},row.quantidadePedida,' ',row.unidade),
-    // qtd entregue
-    React.createElement('td',{style:tdS},
+    React.createElement('td',{style:{...cellSt,width:64}},
+      React.createElement('span',{style:{fontSize:11.5,fontWeight:700,color:'#2563eb',
+        background:'#eff4ff',padding:'2px 6px',borderRadius:5,whiteSpace:'nowrap'}},
+        '#',row.osNumero||'—')
+    ),
+    React.createElement('td',{style:{...cellSt,width:148}},row.cliente),
+    React.createElement('td',{style:{...cellSt,width:148}},row.produtoNome),
+    React.createElement('td',{style:{...cellSt,width:190}},row.descricao),
+    React.createElement('td',{style:{...cellSt,width:82,color:'#555'}},row.quantidadePedida,' ',row.unidade),
+    React.createElement('td',{style:{...cellSt,width:92,padding:'3px 6px'}},
       React.createElement('input',{type:'text',disabled,value:qtdLocal,
         placeholder:String(row.quantidadePedida),
         onChange:e=>setQtdLocal(e.target.value),
@@ -763,42 +769,36 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
           onUpdateMaterial(row.ordemId,row.produtoId,row.id,{quantidadeEntregue:val,observacao:novaObs,dataHoraEntrega:dh},true);
         },
         onKeyDown:e=>{if(e.key==='Escape')setQtdLocal(row.quantidadeEntregue);},
-        style:{...S.inp,width:'100%',...(diverg?S.inpWarn:{})}
+        style:{...inpSt,...(diverg?{borderColor:'#f59e0b',background:'#fffbeb'}:{})}
       })
     ),
-    // setor
-    React.createElement('td',{style:tdS},
+    React.createElement('td',{style:{...cellSt,width:122,padding:'3px 6px'}},
       React.createElement('select',{disabled,value:row.setorEntregue||'',
         onChange:e=>patch({setorEntregue:e.target.value}),
-        style:{...S.sel2,width:'100%',...(setDiv?S.inpWarn:{})}},
+        style:{...inpSt,...(setDiv?{borderColor:'#f59e0b'}:{})}
+      },
         React.createElement('option',{value:''},'—'),
         ...SETORES.map(s=>React.createElement('option',{key:s,value:s},s))
       )
     ),
-    // dt entrega
-    React.createElement('td',{style:tdS},
-      React.createElement('span',{style:{fontSize:10.5,color:'#555',whiteSpace:'nowrap'}},row.dataHoraEntrega||'—')
-    ),
-    // data baixa
-    React.createElement('td',{style:tdS},
-      React.createElement('span',{style:{fontSize:10.5,color:'#555',whiteSpace:'nowrap'}},row.dataBaixa||'—')
-    ),
-    // obs
-    React.createElement('td',{style:tdS},
+    React.createElement('td',{style:{...cellSt,width:108}},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataHoraEntrega||'—')),
+    React.createElement('td',{style:{...cellSt,width:84}},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataBaixa||'—')),
+    React.createElement('td',{style:{...cellSt,padding:'3px 6px'}},
       React.createElement('input',{type:'text',disabled,value:row.observacao,
-        placeholder:'observação...',onChange:e=>patch({observacao:e.target.value}),
-        style:{...S.inp,width:'100%'}})
+        placeholder:'observação...',onChange:e=>patch({observacao:e.target.value}),style:inpSt})
     ),
-    // colaborador
-    React.createElement('td',{style:tdS},
+    React.createElement('td',{style:{...cellSt,width:108,padding:'3px 6px'}},
       React.createElement('input',{type:'text',disabled,value:row.colaborador,
-        placeholder:'—',onChange:e=>patch({colaborador:e.target.value}),
-        style:{...S.inp,width:'100%'}})
+        placeholder:'—',onChange:e=>patch({colaborador:e.target.value}),style:inpSt})
     ),
-    // status
-    React.createElement('td',{style:{...tdS,textAlign:'center'}},
-      React.createElement('span',{style:{...S.statusPill,...(fin?S.pillFin:S.pillAnd)}},
-        React.createElement(Icon,{name:fin?'Lock':'Unlock',size:10}),' ',row.osStatus)
+    React.createElement('td',{style:{...cellSt,width:112,textAlign:'center'}},
+      React.createElement('span',{style:{
+        display:'inline-flex',alignItems:'center',gap:4,fontSize:11,fontWeight:600,
+        padding:'3px 8px',borderRadius:6,whiteSpace:'nowrap',
+        ...(fin?{background:'#dcfce7',color:'#166534'}:{background:'#fff4e0',color:'#a8650f'})
+      }},
+        React.createElement(Icon,{name:fin?'Lock':'Unlock',size:10}),' ',row.osStatus
+      )
     )
   );
 }
