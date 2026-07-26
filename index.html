@@ -76,14 +76,53 @@ function isAdmin(u) { return u && u.trim().toLowerCase() === ADMIN.toLowerCase()
 // ─── SUPABASE STORAGE ─────────────────────────────────────────────────────────
 // Usamos uma única linha na tabela (chave = 'main') para guardar todo o JSON.
 // Estrutura da tabela: id TEXT PRIMARY KEY, data JSONB, updated_at TIMESTAMPTZ
+// Carrega ordens + materiais de forma granular
 async function dbLoad() {
-  const { data, error } = await sb.from(TABLE_NAME).select('data').eq('id','main').maybeSingle();
-  if (error) throw error;
-  return data ? data.data : [];
+  const [resO, resM] = await Promise.all([
+    sb.from('ordens_os').select('data'),
+    sb.from('materiais_os').select('data'),
+  ]);
+  if (resO.error) throw resO.error;
+  if (resM.error) throw resM.error;
+  const matsMap = {};
+  (resM.data||[]).forEach(r=>{ if(r.data&&r.data.id) matsMap[r.data.id]=r.data; });
+  const ordens = (resO.data||[]).map(r=>{
+    const o=r.data;
+    return {...o, produtos:(o.produtos||[]).map(p=>({
+      ...p, materiais:(p.materiais||[]).map(m=>matsMap[m.id]?{...m,...matsMap[m.id]}:m)
+    }))};
+  });
+  ordens.sort((a,b)=>new Date(b.criadoEm)-new Date(a.criadoEm));
+  return ordens;
 }
+// Salva APENAS um material individual (evita conflito entre usuários)
+async function dbSaveMaterial(mat) {
+  const {error}=await sb.from('materiais_os').upsert({id:mat.id,data:mat,updated_at:new Date().toISOString()});
+  if(error) throw error;
+}
+// Salva APENAS metadados de uma ordem (sem materiais)
+async function dbSaveOrdem(ordem) {
+  const sem={...ordem,produtos:ordem.produtos.map(p=>({...p,materiais:p.materiais.map(m=>({id:m.id}))}))};
+  const {error}=await sb.from('ordens_os').upsert({id:ordem.id,data:sem,updated_at:new Date().toISOString()});
+  if(error) throw error;
+}
+// Salva vários materiais de uma vez (usado na importação)
+async function dbSaveMateriais(mats) {
+  if(!mats.length) return;
+  const rows=mats.map(m=>({id:m.id,data:m,updated_at:new Date().toISOString()}));
+  const {error}=await sb.from('materiais_os').upsert(rows);
+  if(error) throw error;
+}
+async function dbDeleteMaterial(id) {
+  const {error}=await sb.from('materiais_os').delete().eq('id',id);
+  if(error) throw error;
+}
+// dbSave legado — importação completa de uma OS
 async function dbSave(ordens) {
-  const { error } = await sb.from(TABLE_NAME).upsert({ id:'main', data: ordens, updated_at: new Date().toISOString() });
-  if (error) throw error;
+  for(const o of ordens){
+    await dbSaveOrdem(o);
+    await dbSaveMateriais(o.produtos.flatMap(p=>p.materiais));
+  }
 }
 
 // ─── LUCIDE ────────────────────────────────────────────────────────────────────
@@ -229,6 +268,15 @@ function App() {
 
   React.useEffect(()=>{ if(usuario) loadOrdens(); },[usuario,loadOrdens]);
 
+  // Auto-refresh a cada 5 minutos para sincronizar entre usuários
+  React.useEffect(()=>{
+    if(!usuario) return;
+    const timer = setInterval(()=>{
+      if(!saving) loadOrdens();
+    }, 2 * 60 * 1000); // 2 minutos
+    return ()=>clearInterval(timer);
+  },[usuario,saving,loadOrdens]);
+
   const persist = React.useCallback(async next=>{
     setOrdens(next); setSaving(true); setSyncErr('');
     try { await dbSave(next); }
@@ -261,7 +309,9 @@ function App() {
         if(idx>=0){next[idx]={...nova,id:next[idx].id,status:next[idx].status};sub++;}
         else{next=[nova,...next];add++;}
       }
-      await persist(next);
+      setOrdens(next);
+      setSaving(true);
+      try{ await dbSave(next); }catch(e){ setSyncErr('Erro ao importar.'); }finally{ setSaving(false); }
       const p=[]; if(add) p.push(`${add} nova(s)`); if(sub) p.push(`${sub} atualizada(s)`);
       setUploadMsg(`Importação concluída: ${p.join(', ')}.`);
     }
@@ -271,149 +321,65 @@ function App() {
 
   function updateMaterial(ordemId,produtoId,materialId,patchData,forceConfirm){
     if(forceConfirm){
-      // Guarda valor anterior para poder reverter no cancelar
-      const ordemAtual=ordens.find(o=>o.id===ordemId);
-      const prodAtual=ordemAtual?.produtos.find(p=>p.id===produtoId);
-      const matAtual=prodAtual?.materiais.find(m=>m.id===materialId);
-      const valorAnterior=matAtual?.quantidadeEntregue||'';
-      setConfirmModal({ordemId,produtoId,materialId,patchData,valorAnterior});
+      const o=ordens.find(x=>x.id===ordemId);
+      const p=o&&o.produtos.find(x=>x.id===produtoId);
+      const m=p&&p.materiais.find(x=>x.id===materialId);
+      setConfirmModal({ordemId,produtoId,materialId,patchData,valorAnterior:m?.quantidadeEntregue||''});
       return;
     }
-    persist(ordens.map(o=>o.id!==ordemId?o:{
-      ...o,produtos:o.produtos.map(p=>p.id!==produtoId?p:{
-        ...p,materiais:p.materiais.map(m=>m.id===materialId?{...m,...patchData}:m)
+    let matAtualizado=null;
+    const next=ordens.map(o=>o.id!==ordemId?o:{...o,produtos:o.produtos.map(p=>p.id!==produtoId?p:{
+      ...p,materiais:p.materiais.map(m=>{
+        if(m.id!==materialId) return m;
+        matAtualizado={...m,...patchData};
+        return matAtualizado;
       })
-    }));
+    })});
+    setOrdens(next);
+    if(matAtualizado){
+      setSaving(true);
+      dbSaveMaterial(matAtualizado).catch(()=>setSyncErr('Erro ao salvar.')).finally(()=>setSaving(false));
+    }
   }
   function confirmarAlteracao(){
     if(!confirmModal) return;
     const {ordemId,produtoId,materialId,patchData}=confirmModal;
-    const agora=new Date();
-    const dataHora=agora.toLocaleDateString('pt-BR')+' '+agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-    const patchFinal={...patchData,dataEntregaMat:patchData.quantidadeEntregue?dataHora:''};
-    persist(ordens.map(o=>o.id!==ordemId?o:{
-      ...o,produtos:o.produtos.map(p=>p.id!==produtoId?p:{
-        ...p,materiais:p.materiais.map(m=>m.id===materialId?{...m,...patchFinal}:m)
-      })
-    }));
+    updateMaterial(ordemId,produtoId,materialId,patchData,false);
     setConfirmModal(null);
   }
   function cancelarAlteracao(){
-    // sinaliza para o LinhaRow que deve reverter via key de reset
-    setConfirmModal(prev=>prev?{...prev,cancelado:true}:null);
+    if(confirmModal){
+      const ev=new CustomEvent('reverterQtd',{detail:{materialId:confirmModal.materialId,valor:confirmModal.valorAnterior}});
+      window.dispatchEvent(ev);
+    }
     setConfirmModal(null);
   }
   function toggleStatus(ordemId){
-    persist(ordens.map(o=>o.id!==ordemId?o:{...o,status:o.status==='Finalizada'?'Em andamento':'Finalizada'}));
+    const next=ordens.map(o=>o.id!==ordemId?o:{...o,status:o.status==='Finalizada'?'Em andamento':'Finalizada'});
+    setOrdens(next);
+    const atualizada=next.find(o=>o.id===ordemId);
+    if(atualizada){ setSaving(true); dbSaveOrdem(atualizada).catch(()=>setSyncErr('Erro ao salvar O.S.')).finally(()=>setSaving(false)); }
   }
   function updateDataEntrega(ordemId,novaData){
     if(!admin) return;
-    persist(ordens.map(o=>o.id!==ordemId?o:{...o,dataEntrega:novaData}));
+    const next=ordens.map(o=>o.id!==ordemId?o:{...o,dataEntrega:novaData});
+    setOrdens(next);
+    const atualizada=next.find(o=>o.id===ordemId);
+    if(atualizada){ setSaving(true); dbSaveOrdem(atualizada).catch(()=>setSyncErr('Erro ao salvar data.')).finally(()=>setSaving(false)); }
   }
   function excluirOrdem(ordemId){
     if(!admin) return;
     if(!window.confirm('Excluir esta O.S.? Ação irreversível.')) return;
-    persist(ordens.filter(o=>o.id!==ordemId));
-  }
-
-  // flatten
-  const todasLinhas = React.useMemo(()=>{
-    if(!ordens) return [];
-    const rows=[];
-    ordens.forEach(o=>{
-      o.produtos.forEach(p=>{
-        p.materiais.forEach(m=>{
-          rows.push({...m,ordemId:o.id,osNumero:o.osNumero,cliente:o.cliente,
-            dataEntrega:o.dataEntrega,osStatus:o.status,produtoId:p.id,produtoNome:p.nome,
-            dataEntregaMat:m.dataEntregaMat||''});
-        });
-      });
-    });
-    return rows;
-  },[ordens]);
-
-  const linhasFiltradas = React.useMemo(()=>{
-    let list=todasLinhas;
-    if(filtroStatus!=='todas') list=list.filter(r=>r.osStatus===filtroStatus);
-    if(filtroOS!=='todas') list=list.filter(r=>r.osNumero===filtroOS);
-    if(debouncedTexto.trim()){
-      const q=debouncedTexto.trim().toLowerCase();
-      list=list.filter(r=>
-        r.osNumero.toLowerCase().includes(q)||r.cliente.toLowerCase().includes(q)||
-        r.produtoNome.toLowerCase().includes(q)||r.descricao.toLowerCase().includes(q)||
-        (r.setorEntregue||r.setorOriginal||'').toLowerCase().includes(q)||
-        (r.colaborador||'').toLowerCase().includes(q)
-      );
-    }
-    if(sort.key){
-      const mul=sort.dir==='asc'?1:-1;
-      list=[...list].sort((a,b)=>{
-        let va,vb;
-        const k=sort.key;
-        if(k==='osNumero'){va=parseInt(a.osNumero)||0;vb=parseInt(b.osNumero)||0;}
-        else if(k==='cliente'){va=a.cliente.toLowerCase();vb=b.cliente.toLowerCase();}
-        else if(k==='produtoNome'){va=a.produtoNome.toLowerCase();vb=b.produtoNome.toLowerCase();}
-        else if(k==='descricao'){va=a.descricao.toLowerCase();vb=b.descricao.toLowerCase();}
-        else if(k==='setor'){va=(a.setorEntregue||a.setorOriginal||'').toLowerCase();vb=(b.setorEntregue||b.setorOriginal||'').toLowerCase();}
-        else if(k==='qtdPedida'){va=a.quantidadePedida;vb=b.quantidadePedida;}
-        else if(k==='qtdEntregue'){va=parseFloat(a.quantidadeEntregue)||-Infinity;vb=parseFloat(b.quantidadeEntregue)||-Infinity;}
-        else if(k==='colaborador'){va=(a.colaborador||'').toLowerCase();vb=(b.colaborador||'').toLowerCase();}
-        else if(k==='check'){va=a.check?1:0;vb=b.check?1:0;}
-        else if(k==='osStatus'){va=a.osStatus;vb=b.osStatus;}
-        else if(k==='dataBaixa'){va=a.dataBaixa||'';vb=b.dataBaixa||'';}
-        else if(k==='dataHoraEntrega'){va=a.dataHoraEntrega||'';vb=b.dataHoraEntrega||'';}
-        else if(k==='dataEntregaMat'){va=a.dataEntregaMat||'';vb=b.dataEntregaMat||'';}
-        else{va='';vb='';}
-        return va<vb?-1*mul:va>vb?1*mul:0;
-      });
-    }
-    // Filtro por data de baixa
-    if(filtroBaixa){
-      const [ano,mes,dia]=filtroBaixa.split('-');
-      const dataFmt=`${dia}/${mes}/${ano}`;
-      list=list.filter(r=>r.dataBaixa===dataFmt);
-    }
-    // Agrupamento por status: pendente de baixa → sem nada → baixado
-    if(agruparStatus){
-      list=[...list].sort((a,b)=>{
-        const rank=r=>{
-          if(r.check) return 2; // baixado — vai para baixo
-          if(r.quantidadeEntregue!==''&&r.quantidadeEntregue!=null) return 0; // pendente — vai para cima
-          return 1; // sem nada — meio
-        };
-        return rank(a)-rank(b);
-      });
-    }
-    return list;
-  },[todasLinhas,filtroStatus,filtroOS,debouncedTexto,sort,agruparStatus,filtroBaixa]);
-
-  const listaOS = React.useMemo(()=>{
-    if(!ordens) return [];
-    return ordens.map(o=>{
-      const totalMat=o.produtos.reduce((s,p)=>s+p.materiais.length,0);
-      const checados=o.produtos.reduce((s,p)=>s+p.materiais.filter(m=>m.check).length,0);
-      return {...o,_totalMat:totalMat,_checados:checados};
-    }).sort((a,b)=>(parseInt(a.osNumero)||0)-(parseInt(b.osNumero)||0));
-  },[ordens]);
-
-  const osOpcoes = React.useMemo(()=>{
-    if(!ordens) return [];
-    return [...new Set(ordens.map(o=>o.osNumero).filter(Boolean))].sort((a,b)=>parseInt(a)-parseInt(b));
-  },[ordens]);
-
-  function toggleSort(key){ setSort(prev=>prev.key===key?{key,dir:prev.dir==='asc'?'desc':'asc'}:{key,dir:'asc'}); }
-
-  function deletarMaterialManual(ordemId,produtoId,materialId){
-    if(!window.confirm('Excluir este item manual?')) return;
-    const next=ordens.map(o=>{
-      if(o.id!==ordemId) return o;
-      return {...o,produtos:o.produtos.map(p=>{
-        if(p.id!==produtoId) return p;
-        const mats=p.materiais.filter(m=>m.id!==materialId);
-        return {...p,materiais:mats};
-      }).filter(p=>p.materiais.length>0)};
-    });
-    persist(next);
+    const ordem=ordens.find(o=>o.id===ordemId);
+    setOrdens(ordens.filter(o=>o.id!==ordemId));
+    setSaving(true);
+    (async()=>{
+      try{
+        await sb.from('ordens_os').delete().eq('id',ordemId);
+        if(ordem){ const ids=ordem.produtos.flatMap(p=>p.materiais.map(m=>m.id)); for(const id of ids) await dbDeleteMaterial(id); }
+      }catch(e){setSyncErr('Erro ao excluir O.S.');}
+      finally{setSaving(false);}
+    })();
   }
   function adicionarMaterialManual(){
     if(!addOS||!addNome.trim()) return;
@@ -428,7 +394,578 @@ function App() {
       if(temManual) return {...o,produtos:o.produtos.map(p=>p.nome==='Manual'?{...p,materiais:[...p.materiais,novoMat]}:p)};
       return {...o,produtos:[...o.produtos,{id:uid(),nome:'Manual',materiais:[novoMat]}]};
     });
-    persist(next);
+    setOrdens(next);
+    const ordemAtualizada=next.find(o=>o.osNumero===addOS);
+    if(ordemAtualizada){
+      setSaving(true);
+      Promise.all([dbSaveOrdem(ordemAtualizada), dbSaveMaterial(novoMat)])
+        .catch(()=>setSyncErr('Erro ao adicionar material.'))
+        .finally(()=>setSaving(false));
+    }
+    setAddNome('');setAddQtd('');setShowAddMat(false);
+  }
+  function exportarExcel(){
+    const rows=linhasFiltradas.map(r=>({
+      'O.S.': r.osNumero,
+      'Cliente': r.cliente,
+      'Produto': r.produtoNome,
+      'Matéria-prima': r.descricao,
+      'Qtd Pedida': r.quantidadePedida,
+      'Unidade': r.unidade,
+      'Qtd Entregue': r.quantidadeEntregue,
+      'Setor': r.setorEntregue||r.setorOriginal,
+      'Observação': r.observacao,
+      'Retirado por': r.colaborador,
+      'Dt. Entrega Mat.': r.dataEntregaMat||'',
+      'Baixa': r.check?'Baixado':(r.quantidadeEntregue?'Pendente de baixa':''),
+      'Status O.S.': r.osStatus,
+      'Data Entrega': r.dataEntrega?r.dataEntrega.split('-').reverse().join('/'):'',
+    }));
+    const ws=XLSX.utils.json_to_sheet(rows);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Ordens de Serviço');
+    XLSX.writeFile(wb,`relatorio_${new Date().toISOString().slice(0,10)}.xlsx`);
+  }
+  if(!usuario) return React.createElement(LoginScreen,{nomeInput,setNomeInput,onEntrar:entrar});
+
+  return React.createElement('div',{style:S.app},
+    React.createElement(TopBar,{usuario,onSair:sair,saving,syncErr,admin,onGerenciar:()=>setShowGerenciar(true)}),
+    React.createElement('div',{style:S.container},
+      React.createElement(UploadBar,{fileInputRef,onFiles:handleFiles,uploadMsg,uploadErr}),
+      React.createElement(Toolbar,{filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,
+        filtroOS,setFiltroOS,osOpcoes,total:todasLinhas.length,filtrados:linhasFiltradas.length,
+        onExportar:exportarExcel,onAddMat:()=>setShowAddMat(true),
+        onAgrupar:agruparStatus,onToggleAgrupar:()=>setAgruparStatus(v=>!v),
+        filtroBaixa,setFiltroBaixa}),
+      confirmModal&&React.createElement('div',{style:S.overlay},
+        React.createElement('div',{style:{...S.modal,maxWidth:400,padding:0}},
+          React.createElement('div',{style:{padding:'24px 24px 8px'}},
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:12}},
+              React.createElement(Icon,{name:'AlertCircle',size:20,color:'#d97706'}),
+              React.createElement('span',{style:{fontSize:15,fontWeight:700}}, 'Confirmar alteração')
+            ),
+            React.createElement('p',{style:{fontSize:13,color:'#555',lineHeight:1.5}},
+              'Você está alterando a quantidade entregue deste item. Deseja confirmar?'
+            )
+          ),
+          React.createElement('div',{style:{display:'flex',gap:8,padding:'12px 24px 20px',justifyContent:'flex-end'}},
+            React.createElement('button',{
+              style:{padding:'8px 18px',fontSize:13,fontWeight:600,borderRadius:7,border:'1px solid #ddd',background:'#fff',cursor:'pointer'},
+              onClick:()=>{
+                // Reverter o campo via evento customizado
+                if(confirmModal){
+                  const ev=new CustomEvent('reverterQtd',{detail:{materialId:confirmModal.materialId,valor:confirmModal.valorAnterior}});
+                  window.dispatchEvent(ev);
+                }
+                setConfirmModal(null);
+              }
+            },'Cancelar ação'),
+            React.createElement('button',{
+              style:{padding:'8px 18px',fontSize:13,fontWeight:600,borderRadius:7,border:'none',background:'#2563eb',color:'#fff',cursor:'pointer'},
+              onClick:confirmarAlteracao
+            },'Confirmar alteração')
+          )
+        )
+      ),
+    showAddMat&&React.createElement('div',{style:S.addPanel},
+        React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}},
+          React.createElement('span',{style:{fontSize:13,fontWeight:600,color:'#166534'}},'+ Matéria-prima manual'),
+          React.createElement('select',{value:addOS,onChange:e=>setAddOS(e.target.value),style:S.sel},
+            React.createElement('option',{value:''},'— Selecione a O.S. —'),
+            ...osOpcoes.map(o=>React.createElement('option',{key:o,value:o},'O.S. '+o))
+          ),
+          React.createElement('input',{type:'text',placeholder:'Nome da matéria-prima',value:addNome,
+            list:'historico-materiais',
+            onChange:e=>setAddNome(e.target.value),style:{...S.inp,flex:'1 1 200px',minWidth:180}}),
+          React.createElement('datalist',{id:'historico-materiais'},
+            ...Array.from(new Set((ordens||[]).flatMap(o=>o.produtos.flatMap(p=>p.materiais.map(m=>m.descricao)))))
+              .sort().map((d,i)=>React.createElement('option',{key:i,value:d}))
+          ),
+          React.createElement('input',{type:'text',placeholder:'Qtd',value:addQtd,
+            onChange:e=>setAddQtd(e.target.value),style:{...S.inp,width:70}}),
+          React.createElement('input',{type:'text',placeholder:'Unid',value:addUnid,
+            onChange:e=>setAddUnid(e.target.value),style:{...S.inp,width:60}}),
+          React.createElement('button',{style:{...S.exportBtn,background:'#059669'},onClick:adicionarMaterialManual},'Adicionar'),
+          React.createElement('button',{style:{...S.exportBtn,background:'#6b7280'},onClick:()=>setShowAddMat(false)},'Cancelar')
+        )
+      ),
+      loading
+        ? React.createElement('div',{style:S.loadingBox},
+            React.createElement(Icon,{name:'RefreshCw',size:16,style:{animation:'spin 1s linear infinite'}}),
+            ' Carregando...')
+        : linhasFiltradas.length===0
+          ? React.createElement(EmptyState,{temDados:todasLinhas.length>0})
+          : React.createElement(TabelaGlobal,{linhas:linhasFiltradas,sort,toggleSort,usuario,onUpdateMaterial:updateMaterial,onDeleteManual:deletarMaterialManual})
+    ),
+    showGerenciar && React.createElement(GerenciarModal,{
+      listaOS,onClose:()=>setShowGerenciar(false),
+      onToggleStatus:toggleStatus,onExcluir:excluirOrdem,
+      onUpdateData:updateDataEntrega,admin
+    })
+  );
+}
+
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
+function LoginScreen({nomeInput,setNomeInput,onEntrar}){
+  return React.createElement('div',{style:S.loginWrap},
+    React.createElement('div',{style:S.loginCard},
+      React.createElement('div',{style:S.loginIcon},React.createElement(Icon,{name:'ClipboardList',size:26,color:'#fff'})),
+      React.createElement('h1',{style:S.loginTitle},'Controle de O.S.'),
+      React.createElement('p',{style:S.loginSub},'Digite seu nome para entrar'),
+      React.createElement('input',{autoFocus:true,type:'text',value:nomeInput,placeholder:'Seu nome',
+        style:S.loginInput,onChange:e=>setNomeInput(e.target.value),
+        onKeyDown:e=>e.key==='Enter'&&onEntrar()}),
+      React.createElement('button',{onClick:onEntrar,disabled:!nomeInput.trim(),style:S.loginBtn},'Entrar')
+    )
+  );
+}
+
+// ─── TOPBAR ───────────────────────────────────────────────────────────────────
+function TopBar({usuario,onSair,saving,syncErr,admin,onGerenciar}){
+  return React.createElement('div',{style:S.topbar},
+    React.createElement('div',{style:S.topbarL},
+      React.createElement(Icon,{name:'ClipboardList',size:18}),
+      React.createElement('span',{style:S.topbarTitle},'Ordens de serviço'),
+      saving && React.createElement('span',{style:S.savingTag},
+        React.createElement(Icon,{name:'RefreshCw',size:11,style:{animation:'spin 1s linear infinite'}}),
+        ' salvando'),
+      syncErr && React.createElement('span',{style:S.errTag},
+        React.createElement(Icon,{name:'AlertCircle',size:11}),' ',syncErr)
+    ),
+    React.createElement('div',{style:S.topbarR},
+      React.createElement('button',{onClick:onGerenciar,style:S.gerenciarBtn},
+        React.createElement(Icon,{name:'Settings',size:13,color:'#fff'}),' Gerenciar O.S.'),
+      React.createElement('span',{style:S.userTag},
+        React.createElement(Icon,{name:'User',size:13}),
+        ' ',usuario,
+        admin && React.createElement('span',{style:S.adminBadge},'admin')),
+      React.createElement('button',{onClick:onSair,style:S.logoutBtn},
+        React.createElement(Icon,{name:'LogOut',size:13}),' Sair')
+    )
+  );
+}
+
+// ─── UPLOAD ───────────────────────────────────────────────────────────────────
+function UploadBar({fileInputRef,onFiles,uploadMsg,uploadErr}){
+  const [drag,setDrag]=React.useState(false);
+  return React.createElement('div',{
+    style:{...S.uploadBar,...(drag?S.uploadBarDrag:{})},
+    onDragOver:e=>{e.preventDefault();setDrag(true)},
+    onDragLeave:()=>setDrag(false),
+    onDrop:e=>{e.preventDefault();setDrag(false);if(e.dataTransfer.files.length)onFiles(e.dataTransfer.files)}
+  },
+    React.createElement('input',{ref:fileInputRef,type:'file',accept:'.xlsx,.xlsm,.xls',multiple:true,
+      style:{display:'none'},onChange:e=>e.target.files.length&&onFiles(e.target.files)}),
+    React.createElement(Icon,{name:'Upload',size:16,color:'#888'}),
+    React.createElement('span',{style:S.uploadTxt},'Arraste planilhas aqui ou'),
+    React.createElement('button',{style:S.uploadBtn,onClick:()=>fileInputRef.current.click()},
+      React.createElement(Icon,{name:'FileSpreadsheet',size:13,color:'#fff'}),' Escolher arquivo'),
+    uploadMsg && React.createElement('span',{style:S.okMsg},
+      React.createElement(Icon,{name:'CheckCircle2',size:13,color:'#2f8050'}),' ',uploadMsg),
+    uploadErr && React.createElement('span',{style:S.errMsg},
+      React.createElement(Icon,{name:'AlertCircle',size:13,color:'#c0392b'}),' ',uploadErr)
+  );
+}
+
+// ─── TOOLBAR ─────────────────────────────────────────────────────────────────
+function Toolbar({filtroTexto,setFiltroTexto,filtroStatus,setFiltroStatus,filtroOS,setFiltroOS,osOpcoes,total,filtrados,onExportar,onAddMat,onAgrupar,onToggleAgrupar,filtroBaixa,setFiltroBaixa}){
+  return React.createElement('div',{style:S.toolbar},
+    React.createElement('button',{style:S.exportBtn,onClick:()=>onExportar()},
+      React.createElement(Icon,{name:'Download',size:13,color:'#fff'}),' Exportar Excel'),
+    React.createElement('button',{style:{...S.exportBtn,background:'#059669'},onClick:()=>onAddMat()},
+      React.createElement(Icon,{name:'Package',size:13,color:'#fff'}),' + Material'),
+    React.createElement('button',{
+      style:{...S.exportBtn,background:onAgrupar?'#7c3aed':'#6b7280'},
+      onClick:()=>onToggleAgrupar(),
+      title:'Agrupar: Pendente de baixa → Sem ação → Baixado'
+    },
+      React.createElement(Icon,{name:'ArrowUpDown',size:13,color:'#fff'}),
+      onAgrupar?' Agrupado por status':' Agrupar por status'
+    ),
+    React.createElement('div',{style:S.searchBox},
+      React.createElement(Icon,{name:'Search',size:14,color:'#bbb'}),
+      React.createElement('input',{type:'text',placeholder:'Buscar O.S., cliente, produto, material, setor, colaborador...',
+        value:filtroTexto,onChange:e=>setFiltroTexto(e.target.value),style:S.searchInput}),
+      filtroTexto && React.createElement('span',{style:{cursor:'pointer'},onClick:()=>setFiltroTexto('')},
+        React.createElement(Icon,{name:'X',size:13,color:'#bbb'}))
+    ),
+    React.createElement('select',{value:filtroOS,onChange:e=>setFiltroOS(e.target.value),style:S.sel},
+      React.createElement('option',{value:'todas'},'Todas as O.S.'),
+      ...osOpcoes.map(o=>React.createElement('option',{key:o,value:o},`O.S. ${o}`))
+    ),
+    React.createElement('select',{value:filtroStatus,onChange:e=>setFiltroStatus(e.target.value),style:S.sel},
+      React.createElement('option',{value:'todas'},'Todos os status'),
+      React.createElement('option',{value:'Em andamento'},'Em andamento'),
+      React.createElement('option',{value:'Finalizada'},'Finalizada')
+    ),
+    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6,background:'#fff',border:'1px solid #e2e2de',borderRadius:8,padding:'5px 10px'}},
+      React.createElement(Icon,{name:'Search',size:13,color:'#4a9b5e'}),
+      React.createElement('span',{style:{fontSize:12,color:'#555',whiteSpace:'nowrap'}},'Baixas em:'),
+      React.createElement('input',{
+        type:'date',value:filtroBaixa,
+        onChange:e=>setFiltroBaixa(e.target.value),
+        style:{border:'none',outline:'none',fontSize:12.5,background:'transparent',cursor:'pointer',color:filtroBaixa?'#166534':'#999'}
+      }),
+      filtroBaixa&&React.createElement('span',{style:{cursor:'pointer',color:'#999'},onClick:()=>setFiltroBaixa('')},
+        React.createElement(Icon,{name:'X',size:12,color:'#999'})
+      )
+    ),
+    React.createElement('span',{style:S.countTag},`${filtrados.toLocaleString()} linha${filtrados!==1?'s':''} de ${total.toLocaleString()}`)
+  );
+}
+
+// ─── TABELA GLOBAL ────────────────────────────────────────────────────────────
+function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial,onDeleteManual}){
+  const thStyle=(w,k,active)=>({
+    padding:'9px 8px',fontSize:11,fontWeight:700,color:'#222',
+    background:'#f0f0ee',borderBottom:'2px solid #d0d0cc',
+    whiteSpace:'nowrap',textAlign:'left',userSelect:'none',
+    width:w,cursor:k?'pointer':'default',verticalAlign:'middle'
+  });
+
+  const cols=[
+    {l:'',k:null,w:40},{l:'O.S.',k:'osNumero',w:64},
+    {l:'Cliente',k:'cliente',w:148},{l:'Produto',k:'produtoNome',w:148},
+    {l:'Matéria-prima',k:'descricao',w:260},
+    {l:'Qtd pedida',k:'qtdPedida',w:82},{l:'Qtd entregue',k:'qtdEntregue',w:92},
+    {l:'Setor',k:'setor',w:122},
+    {l:'Dt. entrega',k:'dataHoraEntrega',w:108},{l:'Data baixa',k:'dataBaixa',w:84},
+    {l:'Observação',k:null,w:'auto'},{l:'Retirado por',k:'colaborador',w:108},
+    {l:'Status',k:'osStatus',w:112},
+  ];
+
+  return React.createElement('div',{style:{
+    background:'#fff',border:'1px solid #ddd',borderRadius:10,
+    overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - 210px)'
+  }},
+    React.createElement('table',{style:{
+      borderCollapse:'collapse',tableLayout:'fixed',
+      width:'100%',minWidth:'1380px'
+    }},
+      React.createElement('colgroup',null,
+        cols.map((c,i)=>React.createElement('col',{key:i,style:{width:c.w}}))
+      ),
+      React.createElement('thead',{style:{position:'sticky',top:0,zIndex:10}},
+        React.createElement('tr',null,
+          cols.map((c,i)=>{
+            const active=sort.key===c.k;
+            return React.createElement('th',{key:i,
+              onClick:c.k?()=>toggleSort(c.k):undefined,
+              style:thStyle(c.w,c.k,active)
+            },
+              React.createElement('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},
+                c.l,
+                c.k&&React.createElement(Icon,{name:'ArrowUpDown',size:10,color:active?'#2563eb':'#bbb'}),
+                active&&React.createElement(Icon,{name:sort.dir==='asc'?'ChevronUp':'ChevronDown',size:10,color:'#2563eb'})
+              )
+            );
+          })
+        )
+      ),
+      React.createElement('tbody',null,
+        linhas.map(row=>React.createElement(LinhaRow,{
+          key:row.id,row,usuario,onUpdateMaterial,onDeleteManual
+        }))
+      )
+    )
+  );
+}
+
+function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
+  const fin=row.osStatus==='Finalizada';
+  const bloqueadoPorCheck=row.check&&!isAdmin(usuario);
+  const disabled=fin||bloqueadoPorCheck;
+  const motivoBloqueio=fin?'O.S. finalizada':bloqueadoPorCheck?'Apenas Juliano Ribeiro pode editar após o check':'';
+  const patch=fields=>onUpdateMaterial(row.ordemId,row.produtoId,row.id,fields);
+  const [qtdLocal,setQtdLocal]=React.useState(row.quantidadeEntregue);
+  React.useEffect(()=>setQtdLocal(row.quantidadeEntregue),[row.quantidadeEntregue]);
+  React.useEffect(()=>{
+    const h=e=>{if(e.detail.materialId===row.id)setQtdLocal(e.detail.valor);};
+    window.addEventListener('reverterQtd',h);
+    return()=>window.removeEventListener('reverterQtd',h);
+  },[row.id]);
+
+  const diverg=qtdLocal!==''&&parseFloat(qtdLocal)!==row.quantidadePedida&&!isNaN(parseFloat(qtdLocal));
+  const setDiv=row.setorEntregue&&row.setorOriginal&&row.setorEntregue.toUpperCase()!==row.setorOriginal.toUpperCase();
+  const temQtd=row.quantidadeEntregue!==''&&row.quantidadeEntregue!=null;
+  const rowBg=row.check?'#edfaf1':temQtd?'#fefce8':'#fff';
+  const rowBL=row.check?'3px solid #22c55e':temQtd?'3px solid #d97706':'3px solid transparent';
+
+  const cellSt={padding:'5px 7px',fontSize:12.5,fontWeight:500,color:'#111',
+    verticalAlign:'middle',borderBottom:'1px solid #f0f0ee',
+    overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'};
+
+  const inpSt={width:'100%',padding:'4px 6px',fontSize:12.5,
+    border:'1px solid #ddd',borderRadius:5,outline:'none',
+    background:disabled?'#f5f5f5':'#fff',color:'#111',fontWeight:500,boxSizing:'border-box'};
+
+  return React.createElement('tr',{style:{background:rowBg,borderLeft:rowBL}},
+    React.createElement('td',{style:{...cellSt,width:40,textAlign:'center',padding:'3px 2px'}},
+      row.manual&&!disabled&&React.createElement('button',{
+        style:{background:'none',border:'none',cursor:'pointer',padding:0,display:'block',margin:'0 auto 2px'},
+        title:'Excluir item manual',onClick:()=>onDeleteManual(row.ordemId,row.produtoId,row.id)
+      },React.createElement(Icon,{name:'Trash2',size:11,color:'#f87171'})),
+      React.createElement('button',{
+        style:{background:'none',border:'none',cursor:disabled?'not-allowed':'pointer',
+          padding:0,display:'block',margin:'0 auto',opacity:disabled?0.4:1},
+        disabled,title:motivoBloqueio||undefined,
+        onClick:()=>patch({check:!row.check,
+          colaborador:!row.check&&!row.colaborador?usuario:row.colaborador,
+          dataBaixa:!row.check?new Date().toLocaleDateString('pt-BR'):''})
+      },
+        row.check
+          ? React.createElement(Icon,{name:'CheckCircle2',size:18,color:'#22c55e'})
+          : React.createElement(Icon,{name:'Circle',size:18,color:'#bbb'})
+      )
+    ),
+    React.createElement('td',{style:{...cellSt,width:64}},
+      React.createElement('span',{style:{fontSize:11.5,fontWeight:700,color:'#2563eb',
+        background:'#eff4ff',padding:'2px 6px',borderRadius:5,whiteSpace:'nowrap'}},
+        '#',row.osNumero||'—')
+    ),
+    React.createElement('td',{style:{...cellSt,width:148},title:row.cliente},row.cliente),
+    React.createElement('td',{style:{...cellSt,width:148},title:row.produtoNome},row.produtoNome),
+    React.createElement('td',{style:{...cellSt,width:260},title:row.descricao},row.descricao),
+    React.createElement('td',{style:{...cellSt,width:82,color:'#555'}},row.quantidadePedida,' ',row.unidade),
+    React.createElement('td',{style:{...cellSt,width:92,padding:'3px 6px'}},
+      React.createElement('input',{type:'text',disabled,value:qtdLocal,
+        placeholder:String(row.quantidadePedida),
+        onChange:e=>setQtdLocal(e.target.value),
+        onBlur:e=>{
+          const val=e.target.value;
+          if(val===row.quantidadeEntregue) return;
+          const obsAtual=row.observacao||'';
+          const obsAuto=obsAtual===''||obsAtual.startsWith('Entregue por ');
+          const novaObs=val&&obsAuto?'Entregue por '+usuario:obsAtual;
+          const agora=new Date();
+          const dh=val?agora.toLocaleDateString('pt-BR')+' '+agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+          onUpdateMaterial(row.ordemId,row.produtoId,row.id,{quantidadeEntregue:val,observacao:novaObs,dataHoraEntrega:dh},true);
+        },
+        onKeyDown:e=>{if(e.key==='Escape')setQtdLocal(row.quantidadeEntregue);},
+        style:{...inpSt,...(diverg?{borderColor:'#f59e0b',background:'#fffbeb'}:{})}
+      })
+    ),
+    React.createElement('td',{style:{...cellSt,width:122,padding:'3px 6px'}},
+      React.createElement('select',{disabled,value:row.setorEntregue||'',
+        onChange:e=>patch({setorEntregue:e.target.value}),
+        style:{...inpSt,...(setDiv?{borderColor:'#f59e0b'}:{})}
+      },
+        React.createElement('option',{value:''},'—'),
+        ...SETORES.map(s=>React.createElement('option',{key:s,value:s},s))
+      )
+    ),
+    React.createElement('td',{style:{...cellSt,width:108},title:row.dataHoraEntrega||''},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataHoraEntrega||'—')),
+    React.createElement('td',{style:{...cellSt,width:84},title:row.dataBaixa||''},React.createElement('span',{style:{fontSize:11,color:'#444',whiteSpace:'nowrap'}},row.dataBaixa||'—')),
+    React.createElement('td',{style:{...cellSt,padding:'3px 6px'},title:row.observacao},
+      React.createElement('input',{type:'text',disabled,value:row.observacao,
+        placeholder:'observação...',onChange:e=>patch({observacao:e.target.value}),style:inpSt})
+    ),
+    React.createElement('td',{style:{...cellSt,width:108,padding:'3px 6px'},title:row.colaborador},
+      React.createElement('input',{type:'text',disabled,value:row.colaborador,
+        placeholder:'—',onChange:e=>patch({colaborador:e.target.value}),style:inpSt})
+    ),
+    React.createElement('td',{style:{...cellSt,width:112,textAlign:'center'}},
+      React.createElement('span',{style:{
+        display:'inline-flex',alignItems:'center',gap:4,fontSize:11,fontWeight:600,
+        padding:'3px 8px',borderRadius:6,whiteSpace:'nowrap',
+        ...(fin?{background:'#dcfce7',color:'#166534'}:{background:'#fff4e0',color:'#a8650f'})
+      }},
+        React.createElement(Icon,{name:fin?'Lock':'Unlock',size:10}),' ',row.osStatus
+      )
+    )
+  );
+}
+
+function GerenciarModal({listaOS,onClose,onToggleStatus,onExcluir,onUpdateData,admin}){
+  return React.createElement('div',{style:S.overlay,onClick:e=>e.target===e.currentTarget&&onClose()},
+    React.createElement('div',{style:S.modal},
+      React.createElement('div',{style:S.modalHeader},
+        React.createElement('span',{style:S.modalTitle},
+          React.createElement(Icon,{name:'Settings',size:15}),' Gerenciar ordens de serviço'),
+        React.createElement('button',{onClick:onClose,style:S.closeBtn},
+          React.createElement(Icon,{name:'X',size:16}))
+      ),
+      React.createElement('div',{style:S.modalBody},
+        listaOS.length===0
+          ? React.createElement('p',{style:S.modalEmpty},'Nenhuma ordem importada.')
+          : listaOS.map(o=>React.createElement(OSRow,{key:o.id,o,onToggleStatus,onExcluir,onUpdateData,admin}))
+      )
+    )
+  );
+}
+
+function OSRow({o,onToggleStatus,onExcluir,onUpdateData,admin}){
+  const fin=o.status==='Finalizada';
+  const pct=o._totalMat?Math.round(o._checados/o._totalMat*100):0;
+  return React.createElement('div',{style:S.osRow},
+    React.createElement('div',{style:S.osRowLeft},
+      React.createElement('span',{style:S.osTag2},'O.S. ',o.osNumero||'—'),
+      React.createElement('div',null,
+        React.createElement('div',{style:S.osCliente},o.cliente),
+        React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5,marginTop:3}},
+          React.createElement('span',{style:S.osDataLabel},'Entrega:'),
+          admin
+            ? React.createElement('input',{type:'date',value:o.dataEntrega||'',
+                onChange:e=>onUpdateData(o.id,e.target.value),style:S.dateInput})
+            : React.createElement('span',{style:S.osDataVal},formatDate(o.dataEntrega))
+        )
+      )
+    ),
+    React.createElement('div',{style:S.osRowMid},
+      React.createElement('div',{style:S.progBarBg},
+        React.createElement('div',{style:{...S.progBarFill,width:`${pct}%`,background:fin?'#4a9b5e':'#2563eb'}})),
+      React.createElement('span',{style:S.progTxt},`${o._checados}/${o._totalMat} (${pct}%)`)
+    ),
+    React.createElement('div',{style:S.osRowRight},
+      React.createElement('button',{style:{...S.statusBtn2,...(fin?S.sBtnFin:S.sBtnAnd)},onClick:()=>onToggleStatus(o.id)},
+        React.createElement(Icon,{name:fin?'Unlock':'Lock',size:12,color:fin?'#2f8050':'#fff'}),
+        ' ',fin?'Reabrir':'Finalizar'),
+      admin && React.createElement('button',{style:S.delBtn,onClick:()=>onExcluir(o.id),title:'Excluir'},
+        React.createElement(Icon,{name:'Trash2',size:14,color:'#ccc'}))
+    )
+  );
+}
+
+// ─── EMPTY ────────────────────────────────────────────────────────────────────
+function EmptyState({temDados}){
+  return React.createElement('div',{style:S.empty},
+    React.createElement(Icon,{name:'Package',size:32,color:'#ccc'}),
+    React.createElement('p',{style:S.emptyT},temDados?'Nenhuma linha encontrada':'Nenhuma ordem importada'),
+    React.createElement('p',{style:S.emptyS},temDados?'Ajuste os filtros.':'Envie um arquivo .xlsm ou .xlsx para começar.')
+  );
+}
+
+// ─── ESTILOS ──────────────────────────────────────────────────────────────────
+const S={
+  app:{fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif',background:'#f4f4f2',minHeight:'100vh',color:'#1a1a1a'},
+  loginWrap:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#f4f4f2'},
+  loginCard:{background:'#fff',borderRadius:14,padding:'40px 36px',width:320,textAlign:'center',boxShadow:'0 1px 3px rgba(0,0,0,.08)',border:'1px solid #eee'},
+  loginIcon:{width:52,height:52,borderRadius:12,background:'#2563eb',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 18px'},
+  loginTitle:{fontSize:18,fontWeight:600,margin:'0 0 4px'},
+  loginSub:{fontSize:13,color:'#888',margin:'0 0 20px'},
+  loginInput:{width:'100%',padding:'10px 12px',fontSize:14,border:'1px solid #ddd',borderRadius:8,marginBottom:12,outline:'none'},
+  loginBtn:{width:'100%',padding:'10px',fontSize:14,fontWeight:600,background:'#2563eb',color:'#fff',border:'none',borderRadius:8,cursor:'pointer'},
+  topbar:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 20px',background:'#fff',borderBottom:'1px solid #e8e8e6',position:'sticky',top:0,zIndex:20},
+  topbarL:{display:'flex',alignItems:'center',gap:8},
+  topbarR:{display:'flex',alignItems:'center',gap:8},
+  topbarTitle:{fontSize:15,fontWeight:600},
+  savingTag:{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#999'},
+  errTag:{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#c0392b'},
+  gerenciarBtn:{display:'flex',alignItems:'center',gap:5,fontSize:12.5,fontWeight:600,background:'#1a1a1a',color:'#fff',border:'none',borderRadius:7,padding:'7px 12px',cursor:'pointer'},
+  userTag:{display:'flex',alignItems:'center',gap:4,fontSize:13,color:'#555'},
+  adminBadge:{fontSize:10,fontWeight:700,background:'#2563eb',color:'#fff',padding:'1px 5px',borderRadius:4,marginLeft:4},
+  logoutBtn:{display:'flex',alignItems:'center',gap:4,fontSize:12,color:'#666',background:'transparent',border:'1px solid #ddd',borderRadius:6,padding:'5px 10px',cursor:'pointer'},
+  container:{maxWidth:1600,margin:'0 auto',padding:'0 16px 60px'},
+  uploadBar:{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'#fff',border:'1.5px dashed #d8d8d4',borderRadius:10,padding:'12px 16px',margin:'16px 0 12px'},
+  uploadBarDrag:{borderColor:'#2563eb',background:'#eff4ff'},
+  uploadTxt:{fontSize:13,color:'#888'},
+  uploadBtn:{display:'flex',alignItems:'center',gap:5,fontSize:12.5,fontWeight:600,background:'#1a1a1a',color:'#fff',border:'none',borderRadius:7,padding:'7px 12px',cursor:'pointer'},
+  okMsg:{display:'flex',alignItems:'center',gap:4,fontSize:12.5,color:'#2f8050'},
+  errMsg:{display:'flex',alignItems:'center',gap:4,fontSize:12.5,color:'#c0392b'},
+  toolbar:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:10},
+  searchBox:{display:'flex',alignItems:'center',gap:6,background:'#fff',border:'1px solid #e2e2de',borderRadius:8,padding:'7px 10px',flex:'1 1 280px',minWidth:200},
+  searchInput:{border:'none',outline:'none',fontSize:13,flex:1,background:'transparent'},
+  sel:{fontSize:12.5,padding:'7px 10px',borderRadius:8,border:'1px solid #e2e2de',background:'#fff',color:'#444',cursor:'pointer'},
+  countTag:{fontSize:12,color:'#999',marginLeft:'auto'},
+  exportBtn:{display:'flex',alignItems:'center',gap:5,fontSize:12.5,fontWeight:600,background:'#2563eb',color:'#fff',border:'none',borderRadius:7,padding:'7px 12px',cursor:'pointer',whiteSpace:'nowrap'},
+  addPanel:{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,padding:'10px 14px',marginBottom:10},
+  loadingBox:{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'#888',padding:'60px 0',justifyContent:'center'},
+  empty:{display:'flex',flexDirection:'column',alignItems:'center',gap:6,padding:'80px 0',textAlign:'center'},
+  emptyT:{fontSize:14,fontWeight:600,color:'#666',margin:0},
+  emptyS:{fontSize:12.5,color:'#aaa',margin:0},
+  tableWrap:{background:'#fff',border:'1px solid #ddddd9',borderRadius:10,overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - 200px)'},
+  tdc:{padding:'4px 6px',fontSize:12,fontWeight:500,color:'#0d0d0d',verticalAlign:'middle',borderBottom:'1px solid #ebebea'},
+  ellipsis:{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'block',maxWidth:'100%'},
+  thead:{display:'flex',background:'#f0f0ee',borderBottom:'2px solid #d8d8d6',position:'sticky',top:0,zIndex:10,minWidth:'max-content',width:'100%'},
+  th:{padding:'8px 6px',fontSize:11,fontWeight:700,color:'#333',letterSpacing:.2,userSelect:'none',display:'flex',alignItems:'center',borderBottom:'2px solid #d0d0ce',background:'#f0f0ee',whiteSpace:'nowrap'},
+  tr:{display:'flex',alignItems:'center',borderBottom:'1px solid #ebebea',minWidth:'max-content',width:'100%',minHeight:34},
+  trBaixado:{background:'#f0faf2',borderLeft:'3px solid #4a9b5e'},
+  trPendente:{background:'#fef3c7',borderLeft:'3px solid #d97706'},
+  trFin:{opacity:.72},
+  td:{padding:'3px 6px',fontSize:12,display:'flex',alignItems:'center',color:'#0d0d0d',fontWeight:500},
+  tdC:{justifyContent:'center'},
+  cCheck:{width:42,flexShrink:0,minWidth:42},
+  cOS:{width:68,flexShrink:0,minWidth:68},
+  cCliente:{width:155,flexShrink:0,minWidth:155},
+  cProduto:{width:155,flexShrink:0,minWidth:155},
+  cDesc:{flex:'1 1 180px',minWidth:180},
+  cQtd:{width:86,flexShrink:0,minWidth:86},
+  cSetor:{width:125,flexShrink:0,minWidth:125},
+  cObs:{flex:'1 1 180px',minWidth:140},
+  cColab:{width:110,flexShrink:0},
+  cDtEntrega:{width:110,flexShrink:0},
+  cDataBaixa:{width:88,flexShrink:0},
+  cStatus:{width:120,flexShrink:0},
+  muted:{color:'#555',fontSize:12,fontWeight:500},
+  overflow:{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',width:'100%',display:'block',color:'#0d0d0d',fontWeight:500},
+  checkBtn:{background:'transparent',border:'none',cursor:'pointer',padding:0,display:'flex'},
+  osTag:{fontSize:11.5,fontWeight:700,color:'#2563eb',background:'#eff4ff',padding:'2px 6px',borderRadius:5,whiteSpace:'nowrap'},
+  inp:{width:'100%',padding:'3px 5px',fontSize:11.5,border:'1px solid #d0d0ce',borderRadius:5,outline:'none',background:'#fff',color:'#0d0d0d',fontWeight:500},
+  sel2:{width:'100%',padding:'3px 5px',fontSize:11.5,border:'1px solid #d0d0ce',borderRadius:5,outline:'none',background:'#fff',cursor:'pointer',color:'#0d0d0d',fontWeight:500},
+  inpWarn:{borderColor:'#e8b84b',background:'#fffaf0'},
+  statusPill:{display:'flex',alignItems:'center',gap:4,fontSize:11,fontWeight:600,padding:'3px 8px',borderRadius:6,whiteSpace:'nowrap'},
+  pillAnd:{background:'#fff4e0',color:'#a8650f'},
+  pillFin:{background:'#e6f4ea',color:'#2f8050'},
+  overlay:{position:'fixed',inset:0,background:'rgba(0,0,0,.35)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center'},
+  modal:{background:'#fff',borderRadius:14,width:'min(680px,96vw)',maxHeight:'80vh',display:'flex',flexDirection:'column',boxShadow:'0 8px 32px rgba(0,0,0,.18)'},
+  modalHeader:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 20px',borderBottom:'1px solid #eee'},
+  modalTitle:{display:'flex',alignItems:'center',gap:7,fontSize:15,fontWeight:600},
+  closeBtn:{background:'transparent',border:'none',cursor:'pointer',color:'#888',display:'flex'},
+  modalBody:{overflowY:'auto',padding:'8px 12px 16px'},
+  modalEmpty:{textAlign:'center',color:'#aaa',fontSize:13,padding:'40px 0'},
+  osRow:{display:'flex',alignItems:'center',gap:12,padding:'12px 8px',borderBottom:'1px solid #f2f2f0',flexWrap:'wrap'},
+  osRowLeft:{display:'flex',alignItems:'center',gap:10,flex:'1 1 240px',minWidth:0},
+  osRowMid:{display:'flex',alignItems:'center',gap:8,flex:'1 1 160px'},
+  osRowRight:{display:'flex',alignItems:'center',gap:6,flexShrink:0},
+  osTag2:{fontSize:12,fontWeight:700,color:'#2563eb',background:'#eff4ff',padding:'3px 8px',borderRadius:6,whiteSpace:'nowrap',flexShrink:0},
+  osCliente:{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},
+  osDataLabel:{fontSize:11.5,color:'#aaa',whiteSpace:'nowrap'},
+  osDataVal:{fontSize:12.5,color:'#555'},
+  dateInput:{fontSize:12,padding:'3px 6px',border:'1px solid #e2e2de',borderRadius:6,outline:'none',background:'#fff',color:'#333',cursor:'pointer'},
+  progBarBg:{width:100,height:6,borderRadius:3,background:'#eee',overflow:'hidden',flexShrink:0},
+  progBarFill:{height:'100%',borderRadius:3,transition:'width .2s'},
+  progTxt:{fontSize:12,color:'#888',whiteSpace:'nowrap'},
+  statusBtn2:{display:'flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,padding:'6px 12px',borderRadius:7,cursor:'pointer',border:'none',whiteSpace:'nowrap'},
+  sBtnAnd:{background:'#1a1a1a',color:'#fff'},
+  sBtnFin:{background:'#e6f4ea',color:'#2f8050',border:'1px solid #c3e6cb'},
+  delBtn:{background:'transparent',border:'none',cursor:'pointer',padding:4,display:'flex'},
+};
+
+// ─── BOOT ─────────────────────────────────────────────────────────────────────
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>
+  function deletarMaterialManual(ordemId,produtoId,materialId){
+    if(!window.confirm('Excluir este item manual?')) return;
+    const next=ordens.map(o=>o.id!==ordemId?o:{...o,produtos:o.produtos.map(p=>p.id!==produtoId?p:{
+      ...p,materiais:p.materiais.filter(m=>m.id!==materialId)
+    }).filter(p=>p.materiais.length>0)});
+    setOrdens(next);
+    setSaving(true);
+    dbDeleteMaterial(materialId).catch(()=>setSyncErr('Erro ao excluir item.')).finally(()=>setSaving(false));
+  }
+  function adicionarMaterialManual(){
+    if(!addOS||!addNome.trim()) return;
+    const novoMat={id:uid(),descricao:addNome.trim(),
+      quantidadePedida:parseFloat(addQtd)||0,unidade:addUnid,
+      setorOriginal:'',check:false,quantidadeEntregue:addQtd||'',
+      setorEntregue:'',observacao:'Adicionado manualmente',
+      colaborador:'',dataBaixa:'',manual:true};
+    const next=ordens.map(o=>{
+      if(o.osNumero!==addOS) return o;
+      const temManual=o.produtos.find(p=>p.nome==='Manual');
+      if(temManual) return {...o,produtos:o.produtos.map(p=>p.nome==='Manual'?{...p,materiais:[...p.materiais,novoMat]}:p)};
+      return {...o,produtos:[...o.produtos,{id:uid(),nome:'Manual',materiais:[novoMat]}]};
+    });
+    setOrdens(next);
+    const ordemAtualizada=next.find(o=>o.osNumero===addOS);
+    if(ordemAtualizada){
+      setSaving(true);
+      Promise.all([dbSaveOrdem(ordemAtualizada), dbSaveMaterial(novoMat)])
+        .catch(()=>setSyncErr('Erro ao adicionar material.'))
+        .finally(()=>setSaving(false));
+    }
     setAddNome('');setAddQtd('');setShowAddMat(false);
   }
   function exportarExcel(){
