@@ -337,8 +337,20 @@ function App() {
   }
   function cancelarAlteracao(){
     if(confirmModal){
-      const ev=new CustomEvent('reverterQtd',{detail:{materialId:confirmModal.materialId,valor:confirmModal.valorAnterior}});
+      const ev=new CustomEvent('reverterQtd',{detail:{
+        materialId:confirmModal.materialId,
+        valor:confirmModal.valorAnterior,
+        obs:confirmModal.obsAnterior,
+        colaborador:confirmModal.colaboradorAnterior
+      }});
       window.dispatchEvent(ev);
+      // Reverter no estado também
+      const {ordemId,produtoId,materialId,valorAnterior,obsAnterior,colaboradorAnterior}=confirmModal;
+      setOrdens(prev=>prev.map(o=>o.id!==ordemId?o:{...o,produtos:o.produtos.map(p=>p.id!==produtoId?p:{
+        ...p,materiais:p.materiais.map(m=>m.id!==materialId?m:{
+          ...m,quantidadeEntregue:valorAnterior,observacao:obsAnterior,colaborador:colaboradorAnterior,dataHoraEntrega:''
+        })
+      })}));
     }
     setConfirmModal(null);
   }
