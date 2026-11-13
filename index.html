@@ -507,6 +507,11 @@ function LoginScreen({nomeInput,setNomeInput,onEntrar}){
 }
 
 function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial,onDeleteManual}){
+  const PASSO=150;
+  const [limite,setLimite]=React.useState(PASSO);
+  React.useEffect(()=>{setLimite(PASSO);},[sort.key,sort.dir,linhas.length]);
+  const visiveis=linhas.length>limite?linhas.slice(0,limite):linhas;
+  const restantes=linhas.length-visiveis.length;
   const thSt=(w,k,active)=>({padding:'9px 8px',fontSize:11,fontWeight:700,color:'#222',background:'#f0f0ee',borderBottom:'2px solid #d0d0cc',whiteSpace:'nowrap',textAlign:'left',userSelect:'none',width:w,cursor:k?'pointer':'default',verticalAlign:'middle'});
   const cols=[
     {l:'',k:null,w:40},{l:'O.S.',k:'osNumero',w:64},{l:'Cliente',k:'cliente',w:148},
@@ -531,12 +536,17 @@ function TabelaGlobal({linhas,sort,toggleSort,usuario,onUpdateMaterial,onDeleteM
           );
         }))
       ),
-      React.createElement('tbody',null,linhas.map(row=>React.createElement(LinhaRow,{key:row.id,row,usuario,onUpdateMaterial,onDeleteManual})))
+      React.createElement('tbody',null,visiveis.map(row=>React.createElement(LinhaRow,{key:row.id,row,usuario,onUpdateMaterial,onDeleteManual})))
+    ),
+    restantes>0&&React.createElement('div',{style:{padding:'12px',textAlign:'center',background:'#fafaf8',borderTop:'1px solid #eee',position:'sticky',left:0}},
+      React.createElement('span',{style:{fontSize:12,color:'#555',marginRight:12}},`Mostrando ${visiveis.length.toLocaleString()} de ${linhas.length.toLocaleString()} linhas (use os filtros para encontrar mais rápido)`),
+      React.createElement('button',{onClick:()=>setLimite(l=>l+PASSO),style:{padding:'6px 14px',fontSize:12,fontWeight:600,border:'1px solid #2563eb',color:'#2563eb',background:'#fff',borderRadius:6,cursor:'pointer',marginRight:8}},'Mostrar mais '+PASSO),
+      React.createElement('button',{onClick:()=>setLimite(l=>l+500),style:{padding:'6px 14px',fontSize:12,fontWeight:600,border:'1px solid #ccc',color:'#444',background:'#fff',borderRadius:6,cursor:'pointer'}},'+500')
     )
   );
 }
 
-function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
+const LinhaRow=React.memo(function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
   const fin=row.osStatus==='Finalizada';
   const bloqueadoPorCheck=row.check&&!isAdmin(usuario);
   const disabled=fin||bloqueadoPorCheck;
@@ -601,7 +611,7 @@ function LinhaRow({row,usuario,onUpdateMaterial,onDeleteManual}){
         React.createElement(Icon,{name:fin?'Lock':'Unlock',size:10}),' ',row.osStatus)
     )
   );
-}
+});
 
 function GerenciarModal({listaOS,onClose,onToggleStatus,onExcluir,onUpdateData,admin}){
   return React.createElement('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,.35)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center'},onClick:e=>e.target===e.currentTarget&&onClose()},
